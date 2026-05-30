@@ -7,37 +7,37 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 0 — Scaffold
 
-- [ ] Create full folder structure (`src/`, `dev_tools/`, `docs/`, `data/`, `outputs/`, `experiments/`, `tests/`)
-- [ ] Create `src/models.py` with all dataclasses from `data_model.md`
-- [ ] Create `src/config.py` with all constants from `analyst_logic.md`
-- [ ] Create empty module stubs with docstrings for every component in `src/` and `dev_tools/`
-- [ ] Create `requirements.txt` with initial dependencies (pandas, pytest, sqlite3 stdlib)
-- [ ] Verify all stubs import cleanly with `python -c "import src.<module>"`
+- [x] Create full folder structure (`src/`, `dev_tools/`, `docs/`, `data/`, `outputs/`, `experiments/`, `tests/`)
+- [x] Create `src/models.py` with all dataclasses from `data_model.md`
+- [x] Create `src/config.py` with all constants from `analyst_logic.md`
+- [x] Create empty module stubs with docstrings for every component in `src/` and `dev_tools/`
+- [x] Create `requirements.txt` with initial dependencies (pandas, pytest, sqlite3 stdlib)
+- [x] Verify all stubs import cleanly with `python -c "import src.<module>"`
 
 ---
 
 ## Phase 1 — Long-term OHLCV DB + Scriber
 
-- [ ] Design and create SQLite schema for `bars` table (see `data_model.md`)
-- [ ] Implement `src/scriber/scriber.py`: `write_bar(bar: OHLCVBar) -> None` — append with dedup
-- [ ] Implement `src/scriber/db.py`: `fetch_bars(ticker, from_dt, to_dt) -> List[OHLCVBar]`
-- [ ] Write unit tests: `tests/test_scriber.py`
-  - [ ] Test deduplication (inserting same bar twice)
-  - [ ] Test range fetch returns correct bars in order
+- [x] Design and create SQLite schema for `bars` table (see `data_model.md`)
+- [x] Implement `src/scriber/scriber.py`: `write_bar(bar: OHLCVBar) -> None` — append with dedup
+- [x] Implement `src/scriber/db.py`: `fetch_bars(ticker, from_dt, to_dt) -> List[OHLCVBar]`
+- [x] Write unit tests: `tests/test_scriber.py`
+  - [x] Test deduplication (inserting same bar twice)
+  - [x] Test range fetch returns correct bars in order
 
 ---
 
 ## Phase 2 — Pivot Builder
 
-- [ ] Copy in existing pivot calculation code → `src/pivot/pivot_calc.py`
-- [ ] Wrap with clean interface: `build_pivots(bars: List[OHLCVBar]) -> List[float]`
-- [ ] Implement pivot cache write/read: `dev_tools/batch_runner/pivot_cache.py`
-  - [ ] `save_cache(ticker, start, end, checkpoints: Dict[int, List[float]]) -> None`
-  - [ ] `load_cache(ticker, start, end) -> Dict[int, List[float]] | None`
-- [ ] Write unit tests: `tests/test_pivot_builder.py`
-  - [ ] Test output is sorted ascending
-  - [ ] Test output is filtered to ±12% of last close
-  - [ ] Test cache round-trip
+- [x] Copy in existing pivot calculation code → `src/pivot/pivot_calc.py`
+- [x] Wrap with clean interface: `build_pivots(bars: List[OHLCVBar]) -> List[float]`
+- [x] Implement pivot cache write/read: `dev_tools/batch_runner/pivot_cache.py`
+  - [x] `save_cache(ticker, start, end, checkpoints: Dict[int, List[float]]) -> None`
+  - [x] `load_cache(ticker, start, end) -> Dict[int, List[float]] | None`
+- [x] Write unit tests: `tests/test_pivot_builder.py`
+  - [x] Test output is sorted ascending
+  - [x] Test output is filtered to ±12% of last close
+  - [x] Test cache round-trip
 
 ---
 

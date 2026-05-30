@@ -105,7 +105,7 @@ The architecture is a pipeline of stateless components communicating via explici
   - `FakeBus` (in `dev_tools/fake_api/`): simulates execution by checking future bars
 - Both implement the same `BrokerBusProtocol` (Python `Protocol` class)
 
-### Fake API (`dev_tools/fake_api/`)
+### Test API (`dev_tools/fake_api/`)
 - Receives a `BrokerOrder` and a view of future bars
 - **Buy limit**: executes if any future bar's `low <= limit_price` (first such bar)
 - **Sell limit**: executes if any future bar's `high >= limit_price` (first such bar)

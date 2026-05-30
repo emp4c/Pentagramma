@@ -2,20 +2,19 @@
 Broker Bus Protocol.
 
 Responsibility:
-    Defines the common interface that both LiveBus and FakeBus must implement.
+    Defines the common interface that both LiveBus and TestBus must implement.
     Components (trader, batch_runner) depend only on this Protocol — never on
     a concrete bus implementation. This ensures streaming and batch modes are
     interchangeable at the bus boundary.
 
     LiveBus  (src/bus/live_bus.py)    — wraps real broker API (out of scope for now)
-    FakeBus  (dev_tools/test_api/)    — simulates fills from future bar data
+    TestBus  (dev_tools/test_api/)    — simulates fills from future bar data
 
 # REVIEW: In streaming mode, broker execution confirmations arrive asynchronously
-# (the broker calls back after the order is routed). In batch/fake mode, the fill
-# is returned synchronously. This Protocol uses a synchronous return signature
-# (returning ExecutionConfirmation | None). For the LiveBus, async delivery will
-# need a callback or queue mechanism not captured here — revisit when implementing
-# live_bus.py.
+# (the broker calls back after the order is routed). In batch/test mode, the fill
+# is computed synchronously via look-ahead. This Protocol uses a synchronous
+# get_confirmation() pattern. For the LiveBus, async delivery will need a callback
+# or queue mechanism not captured here — revisit when implementing live_bus.py.
 """
 
 from __future__ import annotations
@@ -29,31 +28,35 @@ from src.models import BrokerOrder, ExecutionConfirmation
 class BrokerBusProtocol(Protocol):
     """
     Common interface for all broker bus implementations.
-    Both LiveBus and FakeBus must satisfy this Protocol.
+    Both LiveBus and TestBus must satisfy this Protocol.
     """
 
-    def send_order(self, order: BrokerOrder) -> ExecutionConfirmation | None:
+    def send_order(self, order: BrokerOrder) -> str:
         """
         Submit a single order to the broker (real or simulated).
 
-        Args:
-            order: A fully constructed BrokerOrder from the Trader.
-
         Returns:
-            ExecutionConfirmation if the order was filled (immediately or
-            within the simulated window), or None if it expired unfilled.
-
-        # REVIEW: For the LiveBus this will not return a confirmation directly —
-        # real broker APIs are async. This signature works for FakeBus.
-        # The live implementation will need an event/callback mechanism instead.
+            The order_id string (same as order.order_id), confirming receipt.
         """
         ...
 
-    def cancel_all_buys(self, pending_order_ids: list[str]) -> None:
+    def cancel_order(self, order_id: str) -> bool:
         """
-        Request cancellation of all open buy orders.
+        Request cancellation of a single open order.
 
-        Args:
-            pending_order_ids: List of broker order IDs currently awaiting fill.
+        Returns:
+            True if the order was found and successfully cancelled (i.e. it had
+            not yet been filled). False if the order is already filled, already
+            cancelled, or unknown.
+        """
+        ...
+
+    def get_confirmation(self, order_id: str) -> ExecutionConfirmation | None:
+        """
+        Retrieve the execution confirmation for a previously submitted order.
+
+        Returns:
+            ExecutionConfirmation if the order was filled, None if it expired
+            unfilled, was cancelled, or is unknown.
         """
         ...

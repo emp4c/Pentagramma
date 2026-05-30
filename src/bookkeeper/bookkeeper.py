@@ -9,16 +9,18 @@ Responsibility:
     In streaming mode, periodically reconciles against the broker API.
 
 Public interface:
-    Bookkeeper(initial_cash: float)     constructor
-    receive_confirmation(conf)          process a broker execution confirmation
-    available_cash() -> float           cash minus MIN_CASH_RESERVE
+    Bookkeeper(initial_cash: float)
+    receive_confirmation(conf: ExecutionConfirmation) -> None
+    available_cash() -> float           cash minus MIN_CASH_RESERVE; raises ValueError if below
     shares_held() -> float              current share count
+    current_nav(last_price: float) -> float   cash + shares * last_price
     get_ledger() -> List[LedgerEntry]   full immutable ledger copy
 """
 
 from __future__ import annotations
 
-from typing import List, Set
+import uuid
+from typing import List
 
 from src.models import ExecutionConfirmation, LedgerEntry
 from src.config import MIN_CASH_RESERVE
@@ -33,33 +35,76 @@ class Bookkeeper:
     """
 
     def __init__(self, initial_cash: float) -> None:
-        raise NotImplementedError
+        self._cash: float = initial_cash
+        self._shares: float = 0.0
+        self._ledger: List[LedgerEntry] = []
+        self._seen_confirmation_ids: set[str] = set()
 
     def receive_confirmation(self, conf: ExecutionConfirmation) -> None:
         """
         Process an execution confirmation from the broker bus.
 
-        - If conf.confirmation_id has already been seen, silently ignore (idempotent).
-        - On BUY: subtract gross_value + fee from cash; add filled_quantity to shares.
-        - On SELL: add gross_value - fee to cash; subtract filled_quantity from shares.
-        - Append a new LedgerEntry to the ledger.
-
-        Args:
-            conf: The execution confirmation from the broker (live or fake).
+        - If confirmation_id already seen: silently ignore (idempotent).
+        - BUY:  cash -= gross_value + fee;  shares += filled_quantity
+        - SELL: cash += gross_value - fee;  shares -= filled_quantity
+        - Appends a LedgerEntry recording the full state after the trade.
         """
-        raise NotImplementedError
+        if conf.confirmation_id in self._seen_confirmation_ids:
+            return
+
+        gross_value = conf.filled_quantity * conf.filled_price
+        fee = 0.0  # TestBus does not model fees; LiveBus will supply real fees
+
+        if conf.side == "BUY":
+            net_value = gross_value + fee
+            self._cash -= net_value
+            self._shares += conf.filled_quantity
+        else:  # SELL
+            net_value = gross_value - fee
+            self._cash += net_value
+            self._shares -= conf.filled_quantity
+
+        entry = LedgerEntry(
+            entry_id=str(uuid.uuid4()),
+            confirmation_id=conf.confirmation_id,
+            ticker=conf.ticker,
+            side=conf.side,
+            quantity=conf.filled_quantity,
+            price=conf.filled_price,
+            gross_value=gross_value,
+            fee=fee,
+            net_value=net_value,
+            cash_after=self._cash,
+            shares_after=self._shares,
+            timestamp=conf.filled_at,
+            note="",
+        )
+        self._ledger.append(entry)
+        self._seen_confirmation_ids.add(conf.confirmation_id)
 
     def available_cash(self) -> float:
         """
         Return deployable cash: total cash minus MIN_CASH_RESERVE.
-        Never negative — returns 0.0 if cash <= MIN_CASH_RESERVE.
+
+        Raises:
+            ValueError: if total cash has fallen below MIN_CASH_RESERVE,
+                        indicating a system error (over-deployment).
         """
-        raise NotImplementedError
+        if self._cash < MIN_CASH_RESERVE:
+            raise ValueError(
+                f"Cash balance ({self._cash:.2f}) is below MIN_CASH_RESERVE "
+                f"({MIN_CASH_RESERVE:.2f}) — possible over-deployment."
+            )
+        return self._cash - MIN_CASH_RESERVE
 
     def shares_held(self) -> float:
         """Return current number of shares held (may be fractional)."""
-        raise NotImplementedError
+        return self._shares
+
+    def current_nav(self, last_price: float) -> float:
+        """Return current net asset value: cash + market value of shares held."""
+        return self._cash + self._shares * last_price
 
     def get_ledger(self) -> List[LedgerEntry]:
-        """Return a copy of the ledger list (caller must not mutate it)."""
-        raise NotImplementedError
+        """Return a copy of the ledger (caller must not mutate it)."""
+        return list(self._ledger)

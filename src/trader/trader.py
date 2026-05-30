@@ -44,10 +44,5 @@ def process(
         UPDATE_STOPLOSS   → amend/replace existing stop-loss order at broker
 
     Each BrokerOrder gets a fresh UUID as order_id.
-
-    # REVIEW: todo.md signature is process(orders, status, bookkeeper) but
-    # architecture.md shows process(orders: List[AnalystOrder], status: MachineStatus)
-    # with no bookkeeper argument — yet the trader must know available_cash to size
-    # orders. Bookkeeper is included here; architecture.md should be updated.
     """
     raise NotImplementedError

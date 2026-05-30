@@ -36,10 +36,6 @@ class MachineStatus:
     """
     The runtime state of the trading machine. One instance per session.
     Owned by TradingMachine and passed explicitly to every component.
-
-    # REVIEW: architecture.md omits the `bar_count` field that data_model.md
-    # includes. Using data_model.md as the authoritative source for data
-    # structures. Verify this is intentional.
     """
     position:          Literal["IDLE", "LONG"]
     watermark_level:   int | None        # index into current pivots list; None when IDLE
@@ -58,11 +54,6 @@ class AnalystOrder:
     """
     An instruction from the analyst to the trader.
     The trader translates these into BrokerOrder objects.
-
-    # REVIEW: analyst_logic.md uses the keyword `new_price` when constructing
-    # UPDATE_STOPLOSS orders (e.g. AnalystOrder(type="UPDATE_STOPLOSS", new_price=...))
-    # but the data model defines the field as `price`. Using `price` here (data_model.md
-    # is authoritative). The analyst implementation must use `price=` not `new_price=`.
     """
     type: Literal[
         "CANCEL_ALL_BUYS",
@@ -100,7 +91,7 @@ class BrokerOrder:
 @dataclass(frozen=True)
 class ExecutionConfirmation:
     """
-    Returned by the broker bus (live or fake) when an order is filled.
+    Returned by the broker bus (live or test) when an order is filled.
     Immutable — never modified after receipt.
     """
     confirmation_id: str                 # broker-assigned; used for deduplication
@@ -124,7 +115,7 @@ class LedgerEntry:
     quantity:        float
     price:           float
     gross_value:     float               # quantity * price
-    fee:             float               # broker fee (0.0 if unknown/fake)
+    fee:             float               # broker fee (0.0 if unknown/test)
     net_value:       float               # gross_value + fee (cost is positive)
     cash_after:      float               # bookkeeper cash balance after this entry
     shares_after:    float               # bookkeeper shares held after this entry

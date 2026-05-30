@@ -41,29 +41,29 @@ Do not reorder items — dependencies flow top to bottom.
 
 ---
 
-## Phase 3 — Fake API + Bookkeeper
+## Phase 3 — Test API + Bookkeeper
 
-- [ ] Implement `dev_tools/fake_api/fake_bus.py`: `FakeBus` implementing `BrokerBusProtocol`
-  - [ ] Buy limit: fills on first future bar where `low <= limit_price`
-  - [ ] Sell limit: fills on first future bar where `high >= limit_price`
-  - [ ] Market: fills at next bar's open
-  - [ ] Returns `None` if never filled within window
-- [ ] Define `src/bus/protocol.py`: `BrokerBusProtocol` (Python `Protocol` class)
-- [ ] Implement `src/bookkeeper/bookkeeper.py`
-  - [ ] `receive_confirmation(conf: ExecutionConfirmation) -> None` (with dedup)
-  - [ ] `available_cash() -> float`
-  - [ ] `shares_held() -> float`
-  - [ ] `get_ledger() -> List[LedgerEntry]`
-- [ ] Write unit tests: `tests/test_fake_api.py`
-  - [ ] Test buy limit fills correctly
-  - [ ] Test sell limit fills correctly
-  - [ ] Test market order fills at next open
-  - [ ] Test order that never fills returns None
-- [ ] Write unit tests: `tests/test_bookkeeper.py`
-  - [ ] Test cash decreases on buy confirmation
-  - [ ] Test shares increase on buy confirmation
-  - [ ] Test deduplication of confirmation IDs
-  - [ ] Test available_cash respects MIN_CASH_RESERVE
+- [x] Implement `dev_tools/test_api/test_bus.py`: `TestBus` implementing `BrokerBusProtocol`
+  - [x] Buy limit: fills on first future bar where `low <= limit_price`
+  - [x] Sell limit: fills on first future bar where `high >= limit_price`
+  - [x] Market: fills at next bar's open
+  - [x] Returns `None` if never filled within window
+- [x] Define `src/bus/protocol.py`: `BrokerBusProtocol` (Python `Protocol` class)
+- [x] Implement `src/bookkeeper/bookkeeper.py`
+  - [x] `receive_confirmation(conf: ExecutionConfirmation) -> None` (with dedup)
+  - [x] `available_cash() -> float`
+  - [x] `shares_held() -> float`
+  - [x] `get_ledger() -> List[LedgerEntry]`
+- [x] Write unit tests: `tests/test_test_api.py`
+  - [x] Test buy limit fills correctly
+  - [x] Test sell limit fills correctly
+  - [x] Test market order fills at next open
+  - [x] Test order that never fills returns None
+- [x] Write unit tests: `tests/test_bookkeeper.py`
+  - [x] Test cash decreases on buy confirmation
+  - [x] Test shares increase on buy confirmation
+  - [x] Test deduplication of confirmation IDs
+  - [x] Test available_cash respects MIN_CASH_RESERVE
 
 ---
 
@@ -105,7 +105,7 @@ Do not reorder items — dependencies flow top to bottom.
   - [ ] Slices DB: fetches 3-month lookback before start_date for pivot warm-up
   - [ ] Pre-calculates pivot cache for all 30-bar checkpoints in the test window
   - [ ] Replays test window bar by bar, maintaining MachineStatus
-  - [ ] Routes orders to FakeBus
+  - [ ] Routes orders to TestBus
   - [ ] Calls report writer on completion
 - [ ] Write integration test: `tests/test_batch_runner.py`
   - [ ] Test with a small synthetic dataset (known pivots, known expected trades)

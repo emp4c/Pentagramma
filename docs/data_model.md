@@ -98,7 +98,7 @@ class BrokerOrder:
 
 ## ExecutionConfirmation
 
-Returned by the broker bus (live or fake) when an order is filled.
+Returned by the broker bus (live or test) when an order is filled.
 
 ```python
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ class LedgerEntry:
     quantity:        float
     price:           float
     gross_value:     float               # quantity * price
-    fee:             float               # broker fee (0.0 if unknown/fake)
+    fee:             float               # broker fee (0.0 if unknown/test)
     net_value:       float               # gross_value + fee (sign convention: cost is positive)
     cash_after:      float               # bookkeeper cash balance after this entry
     shares_after:    float               # bookkeeper shares held after this entry

@@ -46,7 +46,7 @@ The architecture is a pipeline of stateless components communicating via explici
                         │           Broker Bus              │
                         │  (src/bus)                        │
                         │  streaming: real broker API       │
-                        │  batch:     fake_api (dev_tools)  │
+                        │  batch:     test_api (dev_tools)  │
                         └──────────────┬───────────────────┘
                                        │ ExecutionConfirmation
                                        ▼
@@ -70,7 +70,7 @@ The architecture is a pipeline of stateless components communicating via explici
 - Accepts `(ticker, start_date, end_date)` — slices the long-term OHLCV DB internally
 - Treats `start_date` as "time zero": bars before it feed the pivot builder's lookback window (3 months), bars from `start_date` onward are fed to the pipeline one by one in time order
 - Parallelises across multiple test runs if needed (e.g. testing multiple date ranges)
-- Routes orders to `fake_api` instead of the real broker bus
+- Routes orders to `test_api` instead of the real broker bus
 - After completion, calls the report writer
 
 ### Pivot Builder (`src/pivot/`)
@@ -81,12 +81,12 @@ The architecture is a pipeline of stateless components communicating via explici
 - **Batch optimisation**: pivots can be pre-calculated for every 30-bar checkpoint and cached in `data/pivots_cache/` — batch runner injects the cached list rather than recomputing
 
 ### Analyst (`src/analyst/`)
-- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float]) -> List[AnalystOrder]`
+- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar]) -> List[AnalystOrder]`
 - Contains all trading logic (see `analyst_logic.md`)
 - Returns a list of `AnalystOrder` instructions; never communicates directly with broker
 
 ### Trader (`src/trader/`)
-- Stateless function: `process(orders: List[AnalystOrder], status: MachineStatus) -> List[BrokerOrder]`
+- Stateless function: `process(orders: List[AnalystOrder], status: MachineStatus, bookkeeper: Bookkeeper) -> List[BrokerOrder]`
 - Translates analyst instructions into structured broker orders
 - Handles sizing: each order is for the full available cash (cash - min_cash_reserve)
 - Does not execute — passes `BrokerOrder` objects to the broker bus
@@ -102,10 +102,10 @@ The architecture is a pipeline of stateless components communicating via explici
 ### Broker Bus (`src/bus/`)
 - Single interface, two implementations:
   - `LiveBus`: wraps real broker API, handles retries, rate limits, errors
-  - `FakeBus` (in `dev_tools/fake_api/`): simulates execution by checking future bars
+  - `TestBus` (in `dev_tools/test_api/`): simulates execution by checking future bars
 - Both implement the same `BrokerBusProtocol` (Python `Protocol` class)
 
-### Test API (`dev_tools/fake_api/`)
+### Test API (`dev_tools/test_api/`)
 - Receives a `BrokerOrder` and a view of future bars
 - **Buy limit**: executes if any future bar's `low <= limit_price` (first such bar)
 - **Sell limit**: executes if any future bar's `high >= limit_price` (first such bar)
@@ -148,7 +148,7 @@ batch_runner(ticker, start_date, end_date)
       → if checkpoint: inject cached pivots (or recompute)
       → analyst(bar, machine_status, pivots) → AnalystOrders
       → trader(AnalystOrders, machine_status) → BrokerOrders
-      → fake_bus(BrokerOrders, future_bars) → ExecutionConfirmations
+      → test_bus(BrokerOrders, future_bars) → ExecutionConfirmations
       → bookkeeper updates ledger, cash, shares
   → report_writer(ledger, all_bars) → outputs/active/report.txt
 ```
@@ -167,6 +167,7 @@ class MachineStatus:
     initial_nav: float               # set at session start, used for daily loss check
     session_date: date               # to detect stop_trading_time crossing
     pending_order_ids: List[str]     # broker order IDs awaiting confirmation
+    bar_count: int                   # total bars processed this session (for pivot timing)
 ```
 
 ---

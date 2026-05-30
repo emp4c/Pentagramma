@@ -14,7 +14,7 @@ Always execute Python and testing suites using the explicit virtual environment 
 
 ## Architectural Design Rules (Strict Compliance Required)
 - **Modular Isolation:** Every component inside `src/` must be a self-contained Python module displaying a clear, immutable interface. 
-- **Dual Processing Architecture:** Components must support exactly two deterministic entry points: `run_stream(bar: OHLCVBar)` and `run_batch(df: pd.DataFrame)`.
+- **Dual Processing Architecture:** The system has two deterministic entry points: `on_bar(bar: OHLCVBar)` (stream, via `src/entry/stream_entry.py`) and `run_batch(ticker, start_date, end_date)` (batch, via `dev_tools/batch_runner/runner.py`).
 - **Parallel Batch Execution:** Batch modes must execute in parallel to ensure optimal backtesting throughput (utilize `concurrent.futures` or `joblib`).
 - **Pivot Alignment:** The Pivot Builder mechanism must run strictly every 30 bars in batch mode (equivalent to a 30-minute window in a live session).
 - **Zero Mutable Shared State:** Do not share mutable states between components. All communication objects must be passed explicitly across clean interface boundaries to maintain thread safety.

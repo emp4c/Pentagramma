@@ -24,12 +24,12 @@ A list of `AnalystOrder` objects. May be empty. Processed in order by the trader
 
 If **any** of the following are true, the analyst emits **no orders** and returns immediately:
 
-1. **Daily loss limit**: `current_nav < initial_nav * (1 - 0.03)`
-   - `current_nav` = `bookkeeper.available_cash() + shares_held * last_close`
+1. **Daily loss limit**: `status.position == "IDLE"` AND `available_cash < initial_cash * (1 - 0.03)`
+   - `available_cash` = `bookkeeper.available_cash()`
 2. **Post-hours idle**: `status.position == "IDLE"` AND `current_time_EST > STOP_TRADING_TIME` (default 15:30 EST)
 3. *(Further stop conditions to be added here as they are defined)*
 
-> **Implementation note**: stop conditions must be evaluated before any branch logic below. If a stop condition is met, any pending orders are left as-is (do not cancel — cancelation is a trader action that requires a separate order).
+> **Implementation note**: stop conditions must be evaluated before any branch logic below. If a stop condition is met, cancel any pending orders and return immediately.
 
 ---
 
@@ -63,7 +63,7 @@ condition:   on_fill(order_A)
 price:       (pivots[i] + pivots[i-1]) / 2    # midpoint between pivot[i] and pivot below
 size:        ALL_SHARES
 ```
-> **Edge case**: if `i == 0` (no pivot below), do not issue Order B. Log a warning. Do not issue Order A either — entering without a stop-loss is not permitted.
+> **Edge case**: if `i == 0` (no pivot below),  issue Order B with price = `pivots[0] * (1 - 0.015)` (1.5% below the pivot).
 
 **State updates** (via returned `AnalystOrder` — trader applies them):
 - `status.watermark_level = i`
@@ -73,15 +73,15 @@ size:        ALL_SHARES
 
 ## When Machine is LONG
 
+First check if a pending stop-loss order is still active (it always should, but this is to handle any unexèpected behaviour like cancellation from the broker side). If not, emit a new stop-loss order at the current watermark level and continue with the flow below, otherwise just continue with the flow below. 
+
 ### Step 1 — Check for watermark advance
 - If `bar.close > pivots[watermark_level + 1]`:
   - Update: `watermark_level += 1`
-  - Emit: `AnalystOrder(type="UPDATE_STOPLOSS", new_price=(pivots[watermark_level] + pivots[watermark_level - 1]) / 2)`
+  - Emit: `AnalystOrder(type="UPDATE_STOPLOSS", price=(pivots[watermark_level] + pivots[watermark_level - 1]) / 2)`
   - Rationale: trail the stop-loss upward as price rises through pivots
 
-> **Design note / open question**: an alternative entry strategy considered but deferred is setting the stop-loss at `(pivot[watermark] + pivot[watermark+1]) / 2` (midpoint above instead of below). This would capture a small gain on exit but risks early exit during a bull run. Current choice: use the pivot *below*. Revisit after initial backtesting.
-
-> **Edge case**: if `watermark_level + 1 >= len(pivots)` (at the top of the pivot list), do not advance. Log a warning. Consider this a signal to review pivot recalculation.
+> **Edge case**: if `watermark_level + 1 >= len(pivots)` (at the top of the pivot list), update stoploss with `price=bar.close * (1 + 0.015)` — `bar.close` is the last known price (set new watermark every 1.5% gain).
 
 ### Step 2 — Check for end-of-day exit
 - If `current_time_EST > STOP_TRADING_TIME`:
@@ -108,10 +108,13 @@ size:        ALL_SHARES
 
 ---
 
+## Other Cases / Unexpected behaviour
+###
+
+
 ## Unresolved / To Be Defined
 
-- [ ] Additional stop conditions (beyond daily loss and post-hours idle)
-- [ ] Behaviour if a SELL_LIMIT stop-loss is cancelled externally (e.g. broker disconnect)
-- [ ] Re-entry logic after a stop-loss is hit within the same day
-- [ ] Handling of partial fills from the broker
-- [ ] What happens if pivot list is empty (no pivots within ±12% range)
+- [ ] Re-entry logic after a stop-loss is hit within the same day: when the stop-loss confirmation is received, the bookkeeper should reconfirm the cash available with the broker, update the machine status to idle and then proceed with the normal entry logic 
+- [ ] Handling of partial fills of BUY_LIMIT orders from the broker: cancel the unfilled part of the order and adjust the position size of the stop loss accordingly 
+- [ ] Handling of partial fills of SELL_LIMIT orders from the broker: keep the unfilled part as a SELL order and keep the machine status LONG untill the entire position has been sold - in the meantime the same LONG logic is applied  
+- [ ] What happens if pivot list is empty (no pivots within ±12% range)- issue a warning

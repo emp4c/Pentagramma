@@ -12,13 +12,6 @@ Responsibility:
 
 Public interface:
     analyse(bar, status, pivots, recent_bars) -> List[AnalystOrder]
-
-# REVIEW: architecture.md shows the analyst signature as:
-#   analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float]) -> List[AnalystOrder]
-# but analyst_logic.md adds a fourth argument:
-#   recent_bars: List[OHLCVBar]  (last 5 bars, for VWAP calculation)
-# Using the analyst_logic.md signature here (it is more detailed and authoritative
-# for logic). architecture.md should be updated to match.
 """
 
 from __future__ import annotations

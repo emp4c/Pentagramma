@@ -5,7 +5,7 @@ Responsibility:
     Runs a full simulated trading session over a historical date range.
     Slices the long-term OHLCV DB to obtain a 3-month lookback window (for pivot
     warm-up) plus the test window. Replays the test window bar-by-bar in time order,
-    maintaining MachineStatus, routing orders to FakeBus, and accumulating the ledger.
+    maintaining MachineStatus, routing orders to TestBus, and accumulating the ledger.
     On completion, calls the report writer.
 
     Parallelism: may run multiple (ticker, start, end) test cases concurrently using
@@ -14,12 +14,6 @@ Responsibility:
 
 Public interface:
     run_batch(ticker, start_date, end_date, initial_cash) -> List[LedgerEntry]
-
-# REVIEW: CLAUDE.md defines the batch entry point as run_batch(df: pd.DataFrame),
-# implying the caller provides a pre-loaded DataFrame. architecture.md and todo.md
-# define run_batch(ticker, start_date, end_date) — the runner fetches data itself
-# from the DB. These are incompatible. Using (ticker, start_date, end_date) as
-# per architecture.md (the detailed spec). CLAUDE.md should be updated.
 """
 
 from __future__ import annotations
@@ -58,7 +52,7 @@ def run_batch(
             a. Inject cached pivots if at a 30-bar checkpoint.
             b. Call analyst(bar, status, pivots, recent_bars) → AnalystOrders.
             c. Call trader(AnalystOrders, status, bookkeeper) → BrokerOrders.
-            d. Send each BrokerOrder to FakeBus; pass back confirmations to bookkeeper.
+            d. Send each BrokerOrder to TestBus; pass back confirmations to bookkeeper.
         4. Call report_writer on completion.
     """
     raise NotImplementedError

@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict, List
 
 from src.analyst.analyst import analyse
 from src.bookkeeper.bookkeeper import Bookkeeper
 from src.config import PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
-from src.models import BrokerOrder, LedgerEntry, MachineStatus, OHLCVBar
+from src.models import BrokerOrder, ExecutionConfirmation, LedgerEntry, MachineStatus, OHLCVBar
 from src.pivot.pivot_calc import build_pivots
 from src.scriber.db import fetch_bars
 from src.trader.trader import process
@@ -42,12 +42,15 @@ _logger = logging.getLogger(__name__)
 
 @dataclass
 class RunResult:
-    ticker: str
-    start_date: date
-    end_date: date
-    ledger: List[LedgerEntry]
+    ticker:        str
+    start_date:    date
+    end_date:      date
+    initial_cash:  float
+    ledger:        List[LedgerEntry]
     bars_processed: int
-    final_nav: float
+    final_nav:     float
+    order_log:     List[tuple[int, BrokerOrder]]              = field(default_factory=list)
+    execution_log: List[tuple[int, ExecutionConfirmation]]    = field(default_factory=list)
 
 
 def run_batch(
@@ -56,6 +59,7 @@ def run_batch(
     end_date: date,
     initial_cash: float = 10_000.0,
     _override_bars: tuple[list[OHLCVBar], list[OHLCVBar]] | None = None,
+    db_path: str | None = None,
 ) -> RunResult:
     """
     Execute a simulated trading session and return the run result.
@@ -67,9 +71,10 @@ def run_batch(
         initial_cash:    Starting cash for the session.
         _override_bars:  (lookback_bars, test_window) injected directly — skips DB fetch
                          and pivot cache. For testing only; must not affect production.
+        db_path:         Override the SQLite DB path (defaults to config.DB_PATH).
 
     Returns:
-        RunResult with the full ledger, bar count, and final NAV.
+        RunResult with the full ledger, bar count, final NAV, and order/execution logs.
     """
     # ------------------------------------------------------------------
     # Step 1: Obtain lookback window and test window bars
@@ -85,14 +90,15 @@ def run_batch(
         )
         test_start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
         test_end = datetime.combine(end_date, time.max, tzinfo=timezone.utc)
-        lookback_bars = fetch_bars(ticker, lookback_start, lookback_end)
-        test_window = fetch_bars(ticker, test_start, test_end)
+        lookback_bars = fetch_bars(ticker, lookback_start, lookback_end, db_path=db_path)
+        test_window = fetch_bars(ticker, test_start, test_end, db_path=db_path)
 
     if not test_window:
         return RunResult(
             ticker=ticker,
             start_date=start_date,
             end_date=end_date,
+            initial_cash=initial_cash,
             ledger=[],
             bars_processed=0,
             final_nav=initial_cash,
@@ -127,6 +133,9 @@ def run_batch(
     pending_stop_losses: Dict[str, float] = {}
     current_pivots: list[float] = []
 
+    order_log:     list[tuple[int, BrokerOrder]]           = []
+    execution_log: list[tuple[int, ExecutionConfirmation]] = []
+
     # ------------------------------------------------------------------
     # Step 4: Bar-by-bar simulation loop
     # ------------------------------------------------------------------
@@ -145,6 +154,7 @@ def run_batch(
             if conf is None or conf.filled_at > bar.timestamp:
                 continue
             bookkeeper.receive_confirmation(conf)
+            execution_log.append((t, conf))
             del status.pending_orders[order_id]
 
             if conf.side == "BUY":
@@ -164,6 +174,7 @@ def run_batch(
                     )
                     test_bus.send_order(stop_order, current_bar_index=t)
                     status.pending_orders[stop_order.order_id] = "SELL"
+                    order_log.append((t, stop_order))
                 else:
                     status.active_stop_price = None
 
@@ -203,6 +214,7 @@ def run_batch(
             else:
                 test_bus.send_order(broker_order, current_bar_index=t)
                 status.pending_orders[broker_order.order_id] = broker_order.side
+                order_log.append((t, broker_order))
 
         status.bar_count += 1
 
@@ -212,14 +224,26 @@ def run_batch(
     last_bar = test_window[-1]
     final_nav = bookkeeper.current_nav(last_bar.close)
 
-    return RunResult(
+    result = RunResult(
         ticker=ticker,
         start_date=start_date,
         end_date=end_date,
+        initial_cash=initial_cash,
         ledger=bookkeeper.get_ledger(),
         bars_processed=len(test_window),
         final_nav=final_nav,
+        order_log=order_log,
+        execution_log=execution_log,
     )
+
+    # ------------------------------------------------------------------
+    # Step 6: Write report (local import avoids circular dependency)
+    # ------------------------------------------------------------------
+    from dev_tools.report.writer import write_report  # noqa: PLC0415
+    report_path = write_report(result, test_window)
+    _logger.info("Report written to %s", report_path)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

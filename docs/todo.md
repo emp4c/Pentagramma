@@ -118,10 +118,14 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 7 — Report Writer
 
-- [ ] Implement `dev_tools/report/writer.py`
-  - [ ] `write_report(ledger, bars, output_path) -> None`
-  - [ ] One line per bar: timestamp, OHLCV, machine status, orders issued, executions
-  - [ ] Summary section: total trades, final NAV, max drawdown
+- [x] Implement `dev_tools/report/writer.py`
+  - [x] `write_report(result, bars, output_dir) -> str`
+  - [x] One line per bar: timestamp, OHLCV, machine status, orders issued, executions
+  - [x] Summary section: total trades, final NAV, max drawdown
+- [x] `RunResult` extended with `initial_cash`, `order_log`, `execution_log`
+- [x] `run_batch()` populates logs and calls `write_report` after the loop
+- [x] `src/entry/batch.py` CLI wrapper (`--ticker`, `--start`, `--end`, `--db`, `--cash`)
+- [x] Verified against Phase 6 synthetic dataset: 60 lines, 2 FILLED events, correct P&L
 
 ---
 

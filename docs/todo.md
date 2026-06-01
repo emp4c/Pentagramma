@@ -69,19 +69,19 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 4 — Analyst
 
-- [ ] Implement `src/analyst/analyst.py`
-  - [ ] `analyse(bar, status, pivots, recent_bars) -> List[AnalystOrder]`
-  - [ ] Stop conditions (daily loss, post-hours idle)
-  - [ ] IDLE branch: cancel buys, VWAP + close pivot check, entry orders
-  - [ ] LONG branch: watermark advance, end-of-day market sell
-- [ ] Write unit tests: `tests/test_analyst.py`
-  - [ ] Test stop condition — daily loss triggers blank return
-  - [ ] Test stop condition — post-hours idle triggers blank return
-  - [ ] Test IDLE: pivot_vwap != pivot_close → no entry orders
-  - [ ] Test IDLE: pivot_vwap == pivot_close → buy limit + stop-loss emitted
-  - [ ] Test IDLE: i == 0 (no pivot below) → no orders, warning logged
-  - [ ] Test LONG: close above next pivot → watermark advances, stop-loss updated
-  - [ ] Test LONG: post stop_trading_time → market sell emitted
+- [x] Implement `src/analyst/analyst.py`
+  - [x] `analyse(bar, status, pivots, recent_bars, bookkeeper, recalc_hook) -> List[AnalystOrder]`
+  - [x] Stop conditions (daily loss, post-hours idle)
+  - [x] IDLE branch: cancel buys, VWAP + close pivot check, entry orders
+  - [x] LONG branch: watermark advance, end-of-day market sell
+- [x] Write unit tests: `tests/test_analyst.py`
+  - [x] Test stop condition — daily loss triggers blank return
+  - [x] Test stop condition — post-hours idle triggers blank return
+  - [x] Test IDLE: pivot_vwap != pivot_close → no entry orders
+  - [x] Test IDLE: pivot_vwap == pivot_close → buy limit + stop-loss emitted
+  - [x] Test IDLE: i == 0 (no pivot below) → no orders, warning logged
+  - [x] Test LONG: close above next pivot → watermark advances, stop-loss updated
+  - [x] Test LONG: post stop_trading_time → market sell emitted
 
 ---
 
@@ -148,3 +148,4 @@ Do not reorder items — dependencies flow top to bottom.
 - [ ] Re-entry logic after stop-loss hit same day
 - [ ] Partial fill handling
 - [ ] Multi-ticker support
+- [ ] Virtual pivot fallback for entry at index 0 (it does not handle the case where the pivots jumps below by more than 1.5%)

@@ -81,7 +81,7 @@ The architecture is a pipeline of stateless components communicating via explici
 - **Batch optimisation**: pivots can be pre-calculated for every 30-bar checkpoint and cached in `data/pivots_cache/` — batch runner injects the cached list rather than recomputing
 
 ### Analyst (`src/analyst/`)
-- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar]) -> List[AnalystOrder]`
+- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar], bookkeeper: Bookkeeper, recalc_hook: Callable[[], List[float]] | None = None) -> List[AnalystOrder]`
 - Contains all trading logic (see `analyst_logic.md`)
 - Returns a list of `AnalystOrder` instructions; never communicates directly with broker
 

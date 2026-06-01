@@ -13,6 +13,8 @@ The analyst receives on every bar:
 - `status: MachineStatus` — current machine state
 - `pivots: List[float]` — current pivot list, sorted ascending (`pivots[j] < pivots[j+1]`)
 - `recent_bars: List[OHLCVBar]` — last 5 bars (for VWAP calculation)
+- `bookkeeper: Bookkeeper` — current bookkeeper state
+- `recalc_hook: Callable[[], List[float]] | None = None` — optional callback supplied by the entry point; called when `bar.close` moves out of pivot scope to attempt an immediate pivot rebuild before falling back to virtual grid extension. `None` in contexts where on-demand rebuild is not supported (e.g., batch mode without a live DB connection).
 
 ## Output
 
@@ -20,11 +22,61 @@ A list of `AnalystOrder` objects. May be empty. Processed in order by the trader
 
 ---
 
+## Out-of-Scope Pivot Handling
+
+Executed on every bar, immediately after the empty-pivot guard and before any branch logic.
+
+### Boundary Definitions
+
+A price is **within scope** if:
+
+```
+lower_boundary = min_pivot × (1 − 0.0075)   # min_pivot × (1 − 0.015 / 2)
+upper_boundary = max_pivot × (1 + 0.0075)   # max_pivot × (1 + 0.015 / 2)
+```
+
+If `bar.close` falls outside these boundaries the price is **out of scope (OOS)**.
+
+### Step 1 — Recalculation Trigger
+
+When OOS is first detected:
+- If `recalc_hook` is provided, call it immediately to obtain fresh pivots.
+- If the fresh pivots cover `bar.close` (i.e. close is now in scope), use them — no virtual extension needed.
+- If the fresh pivots still do not cover `bar.close`, or no hook was provided, proceed to Step 2.
+
+> `recalc_hook` must invoke the pivot builder with the same 3-month lookback used at scheduled 30-bar checkpoints (see `stream_entry.on_bar()`).
+
+### Step 2 — Virtual Pivot Grid Extension
+
+Extend the pivot list geometrically at **1.5% spacing** until the closest virtual pivot covers `bar.close`.
+
+**Price above scope** — append upward:
+```
+pivot[len + j − 1] = max_pivot × (1 + 0.015)^j
+j = max(1, round(log(bar.close / max_pivot) / log(1.015)))
+Append pivots for j = 1 … j_target (list stays sorted ascending).
+```
+
+**Price below scope** — prepend downward:
+```
+pivot[−j] = min_pivot × (1 − 0.015)^j
+j = max(1, round(log(bar.close / min_pivot) / log(0.985)))
+Prepend pivots for j = j_target … 1 (list stays sorted ascending).
+```
+
+> The extended list is **ephemeral** — local to the current bar's analysis call. It is not written back to the session pivot cache or stored in `MachineStatus`.
+
+### Effect on Downstream Logic
+
+After this step the working pivot list always contains `bar.close` within its boundaries. The IDLE and LONG branches below operate on the resolved list without any special-case guarding for price extremes.
+
+---
+
 ## Stop Conditions (checked first, every bar)
 
 If **any** of the following are true, the analyst emits **no orders** and returns immediately:
 
-1. **Daily loss limit**: `status.position == "IDLE"` AND `available_cash < initial_cash * (1 - 0.03)`
+1. **Daily loss limit**: `status.position == "IDLE"` AND `available_cash < initial_cash * (1 - 0.03)` #at opening available_cash = initial_nav
    - `available_cash` = `bookkeeper.available_cash()`
 2. **Post-hours idle**: `status.position == "IDLE"` AND `current_time_EST > STOP_TRADING_TIME` (default 15:30 EST)
 3. *(Further stop conditions to be added here as they are defined)*
@@ -63,7 +115,7 @@ condition:   on_fill(order_A)
 price:       (pivots[i] + pivots[i-1]) / 2    # midpoint between pivot[i] and pivot below
 size:        ALL_SHARES
 ```
-> **Edge case**: if `i == 0` (no pivot below),  issue Order B with price = `pivots[0] * (1 - 0.015)` (1.5% below the pivot).
+> **Edge case**: if `i == 0` (no pivot below), prepend one virtual pivot at `pivots[0] × (1 − 0.015)` to the working pivot list and set `i = 1`. The original `pivots[0]` becomes `pivots[1]` in the extended list. Order B price = `(pivots[1] + pivots[0]) / 2` in the extended list (midpoint between the original lowest pivot and the new virtual pivot). No special-casing in order construction is needed.
 
 **State updates** (via returned `AnalystOrder` — trader applies them):
 - `status.watermark_level = i`
@@ -73,7 +125,13 @@ size:        ALL_SHARES
 
 ## When Machine is LONG
 
-First check if a pending stop-loss order is still active (it always should, but this is to handle any unexèpected behaviour like cancellation from the broker side). If not, emit a new stop-loss order at the current watermark level and continue with the flow below, otherwise just continue with the flow below. 
+Before the watermark advance check, verify that a pending stop-loss order is still active (`len(status.pending_order_ids) > 0`). Under the single-position constraint every pending order while LONG is a SELL; an empty list means the stop-loss was unexpectedly removed (e.g. broker-side cancellation).
+
+**If stop-loss is missing** (`status.pending_order_ids` is empty):
+- Re-emit a `SELL_LIMIT` stop-loss anchored to the **closest pivot to `bar.close`**, not the original watermark. This ensures the protection level reflects current price rather than the stale entry level.
+  - `price = (pivots[i] + pivots[i−1]) / 2`, where `i` = index of pivot closest to `bar.close`
+- **Exception**: if the closest pivot is at index 0 (no pivot below), re-emission is skipped and a warning is logged.
+- Continue to Step 1 below. A re-emitted `SELL_LIMIT` and an `UPDATE_STOPLOSS` may appear together in the same bar's output.
 
 ### Step 1 — Check for watermark advance
 - If `bar.close > pivots[watermark_level + 1]`:
@@ -105,6 +163,22 @@ First check if a pending stop-loss order is still active (it always should, but 
 | `PIVOT_INTERVAL_BARS` | 30 | Bars between pivot recalculations |
 | `PIVOT_LOOKBACK_DAYS` | 90 | ~3 months of history for pivot builder |
 | `VWAP_WINDOW_BARS` | 5 | Bars used for VWAP in idle check |
+
+---
+
+## Order Attribution (UUID Convention)
+
+Every `BUY_LIMIT` order carries a UUID generated by the analyst in its `condition` field. The paired `SELL_LIMIT` stop-loss references that UUID in its `condition` field as `on_fill:<uuid>`.
+
+**The Trader must use the value in `BUY_LIMIT.condition` as the `BrokerOrder.order_id`** for that buy. This guarantees that the stop-loss `condition` string matches the live broker order ID at execution time.
+
+```
+Analyst emits:
+  BUY_LIMIT  → condition = "<uuid>"          # Trader uses this as BrokerOrder.order_id
+  SELL_LIMIT → condition = "on_fill:<uuid>"  # references the BUY order by the same ID
+```
+
+This convention is the only mechanism linking a stop-loss to its paired buy order. No other order type carries a UUID in `condition`.
 
 ---
 

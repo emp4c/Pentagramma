@@ -58,7 +58,7 @@ class AnalystOrder:
     type: Literal[
         "CANCEL_ALL_BUYS",
         "BUY_LIMIT",
-        "SELL_LIMIT",
+        "SELL_STOP",
         "SELL_MARKET",
         "UPDATE_STOPLOSS",
     ]

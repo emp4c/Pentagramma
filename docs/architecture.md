@@ -84,6 +84,7 @@ The architecture is a pipeline of stateless components communicating via explici
 - Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar], bookkeeper: Bookkeeper, recalc_hook: Callable[[], List[float]] | None = None) -> List[AnalystOrder]`
 - Contains all trading logic (see `analyst_logic.md`)
 - Returns a list of `AnalystOrder` instructions; never communicates directly with broker
+- **Entry + stop-loss flow**: on every IDLE bar where VWAP and close agree on the same pivot, the analyst emits a `BUY_LIMIT` paired with a `SELL_STOP` (stop-loss) in the same response. The stop-loss fires only after the buy fills (`condition="on_fill:<uuid>"`). Once LONG, the analyst advances a watermark each time close breaks above the next pivot, emitting `UPDATE_STOPLOSS` to trail the stop-loss upward — locking in gains without ever moving it down.
 
 ### Trader (`src/trader/`)
 - Stateless function: `process(orders: List[AnalystOrder], status: MachineStatus, bookkeeper: Bookkeeper) -> List[BrokerOrder]`
@@ -107,8 +108,9 @@ The architecture is a pipeline of stateless components communicating via explici
 
 ### Test API (`dev_tools/test_api/`)
 - Receives a `BrokerOrder` and a view of future bars
-- **Buy limit**: executes if any future bar's `low <= limit_price` (first such bar)
-- **Sell limit**: executes if any future bar's `high >= limit_price` (first such bar)
+- **Buy limit** (`LIMIT` / `BUY`): executes on the first future bar where `low <= limit_price`
+- **Sell limit** (`LIMIT` / `SELL`): executes on the first future bar where `high >= limit_price`
+- **Stop-loss** (`STOP_LIMIT` / `SELL`): executes on the first future bar where `low <= limit_price` — triggers when price drops *to or below* the stop level
 - **Market order**: executes at next bar's open
 - Returns an `ExecutionConfirmation` (or `None` if never filled within the test window)
 

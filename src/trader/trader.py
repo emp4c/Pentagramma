@@ -51,9 +51,9 @@ def process(
     Translation rules:
         CANCEL_ALL_BUYS   → one CANCEL BrokerOrder per pending BUY order_id
         BUY_LIMIT         → LIMIT buy; quantity = floor(available_cash() / price)
-        SELL_LIMIT        → LIMIT sell; quantity = shares_held(); condition passed through
+        SELL_STOP         → STOP_LIMIT sell (stop-loss); quantity = shares_held(); condition passed through
         SELL_MARKET       → MARKET sell; quantity = shares_held()
-        UPDATE_STOPLOSS   → CANCEL the existing SELL + fresh SELL LIMIT at new price
+        UPDATE_STOPLOSS   → CANCEL the existing SELL + fresh STOP_LIMIT sell at new price
     """
     result: List[BrokerOrder] = []
     now = datetime.now(timezone.utc)
@@ -101,18 +101,18 @@ def process(
                 created_at=now,
             ))
 
-        elif order.type == "SELL_LIMIT":
+        elif order.type == "SELL_STOP":
             shares = bookkeeper.shares_held()
             if shares == 0.0:
                 _logger.warning(
-                    "SELL_LIMIT skipped: shares_held is 0 (ticker=%s)", ticker
+                    "SELL_STOP skipped: shares_held is 0 (ticker=%s)", ticker
                 )
                 continue
             result.append(BrokerOrder(
                 order_id=str(uuid.uuid4()),
                 ticker=ticker,
                 side="SELL",
-                order_type="LIMIT",
+                order_type="STOP_LIMIT",
                 limit_price=order.price,
                 quantity=shares,
                 condition=order.condition,
@@ -169,7 +169,7 @@ def process(
                 order_id=str(uuid.uuid4()),
                 ticker=ticker,
                 side="SELL",
-                order_type="LIMIT",
+                order_type="STOP_LIMIT",
                 limit_price=order.price,
                 quantity=shares,
                 condition=None,

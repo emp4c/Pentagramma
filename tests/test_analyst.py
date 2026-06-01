@@ -152,10 +152,10 @@ def test_idle_pivot_mismatch_cancel_only(
 def test_idle_pivot_match_emits_entry_orders(
     pivots: list[float], idle_status: MachineStatus, bk: Bookkeeper
 ) -> None:
-    """pivot_vwap == pivot_close, i > 0 → CANCEL_ALL_BUYS + BUY_LIMIT + SELL_LIMIT."""
+    """pivot_vwap == pivot_close, i > 0 → CANCEL_ALL_BUYS + BUY_LIMIT + SELL_STOP."""
     # Both VWAP and close ≈ 106 → closest pivot 105 (idx 1)
     result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
-    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_LIMIT"]
+    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
 
 
 def test_idle_pivot_at_index_zero_uses_virtual_fallback(
@@ -171,9 +171,9 @@ def test_idle_pivot_at_index_zero_uses_virtual_fallback(
     SELL_LIMIT : (100 + 98.5) / 2 = 99.25
     """
     result = analyse(_bar(100.0), idle_status, pivots, _recent_bars(100.0), bk)
-    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_LIMIT"]
+    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
     buy = next(o for o in result if o.type == "BUY_LIMIT")
-    sl  = next(o for o in result if o.type == "SELL_LIMIT")
+    sl  = next(o for o in result if o.type == "SELL_STOP")
     assert buy.price == pytest.approx(100.0 * (1 - BUY_LIMIT_OFFSET))
     assert sl.price  == pytest.approx((100.0 + 100.0 * 0.985) / 2)   # 99.25
 
@@ -195,7 +195,7 @@ def test_idle_stoploss_price(
     i = 1   # pivots[1]=105, pivots[0]=100 → midpoint=102.5
     result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
     buy = next(o for o in result if o.type == "BUY_LIMIT")
-    sl  = next(o for o in result if o.type == "SELL_LIMIT")
+    sl  = next(o for o in result if o.type == "SELL_STOP")
     assert sl.price == pytest.approx(_stoploss_price(pivots, i))
     # UUID linkage: stop-loss condition must reference the buy order's UUID
     assert sl.condition == f"on_fill:{buy.condition}"
@@ -294,7 +294,7 @@ def test_long_stop_condition_wins_over_watermark_advance(
 def test_long_reemits_stoploss_when_no_pending(
     pivots: list[float], bk: Bookkeeper
 ) -> None:
-    """pending_order_ids empty + LONG + shares > 0 → re-emits SELL_LIMIT stop-loss."""
+    """pending_order_ids empty + LONG + shares > 0 → re-emits SELL_STOP stop-loss."""
     _give_shares(bk)
     status = MachineStatus(
         position="LONG",
@@ -307,7 +307,7 @@ def test_long_reemits_stoploss_when_no_pending(
     # close=113 → closest pivot: |113-110|=3, |113-115|=2 → idx 3 (pivots[3]=115)
     # re-emitted stoploss price = (115+110)/2 = 112.5
     result = analyse(_bar(113.0), status, pivots, _recent_bars(113.0), bk)
-    sl_orders = [o for o in result if o.type == "SELL_LIMIT"]
+    sl_orders = [o for o in result if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
     assert sl_orders[0].price == pytest.approx(_stoploss_price(pivots, 3))
     assert sl_orders[0].size == "ALL_SHARES"
@@ -329,7 +329,7 @@ def test_long_reemit_stoploss_price_anchors_to_close(
     # close=118 → closest pivot: |118-120|=2, |118-115|=3 → idx 4 (pivots[4]=120)
     # re-emitted stoploss = (120+115)/2 = 117.5  (different from original watermark)
     result = analyse(_bar(118.0), status, pivots, _recent_bars(118.0), bk)
-    sl_orders = [o for o in result if o.type == "SELL_LIMIT"]
+    sl_orders = [o for o in result if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
     assert sl_orders[0].price == pytest.approx(_stoploss_price(pivots, 4))
 
@@ -350,7 +350,7 @@ def test_long_reemit_stoploss_skips_at_index_zero(
     # close=100 → closest pivot idx 0 → skip re-emission
     with caplog.at_level(logging.WARNING, logger="src.analyst.analyst"):
         result = analyse(_bar(100.0), status, pivots, _recent_bars(100.0), bk)
-    assert not any(o.type == "SELL_LIMIT" for o in result)
+    assert not any(o.type == "SELL_STOP" for o in result)
     assert any("index 0" in r.message or "pivot below" in r.message for r in caplog.records)
 
 
@@ -373,7 +373,7 @@ def test_long_reemit_and_watermark_advance_together(
     # close=116 > pivots[3]=115 → watermark advances; also triggers re-emission
     result = analyse(_bar(116.0), status, pivots, _recent_bars(116.0), bk)
     types = [o.type for o in result]
-    assert "SELL_LIMIT" in types        # re-emitted stop-loss
+    assert "SELL_STOP" in types         # re-emitted stop-loss
     assert "UPDATE_STOPLOSS" in types   # watermark advance
 
 
@@ -464,7 +464,7 @@ def test_oos_idle_entry_orders_emitted_via_virtual_pivot(
     types = [o.type for o in result]
     assert "CANCEL_ALL_BUYS" in types
     assert "BUY_LIMIT" in types
-    assert "SELL_LIMIT" in types
+    assert "SELL_STOP" in types
 
 
 def test_oos_recalc_hook_resolves_scope(

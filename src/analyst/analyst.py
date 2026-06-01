@@ -97,7 +97,7 @@ def _emit_missing_stoploss(
     if qty <= 0:
         return []
     return [AnalystOrder(
-        type="SELL_LIMIT",
+        type="SELL_STOP",
         price=_stoploss_price(pivots, i),
         size="ALL_SHARES",
     )]
@@ -249,7 +249,7 @@ def analyse(
             watermark=i,
         ))
         orders.append(AnalystOrder(
-            type="SELL_LIMIT",
+            type="SELL_STOP",
             price=_stoploss_price(pivots, i),
             size="ALL_SHARES",
             condition=f"on_fill:{order_uuid}",

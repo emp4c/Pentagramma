@@ -174,6 +174,57 @@ class TestSellLimit:
 
 
 # ---------------------------------------------------------------------------
+# STOP LIMIT (stop-loss)
+# ---------------------------------------------------------------------------
+
+class TestStopLimit:
+    def test_sell_stop_fills_when_low_drops_to_limit(self):
+        """Stop-loss fires on the first bar where low <= limit_price, not before."""
+        limit = 95.0
+        bars = [
+            _bar(0, low=98.0, high=102.0),   # low > limit — no fill
+            _bar(1, low=97.0, high=101.0),   # low > limit — no fill
+            _bar(2, low=94.0, high=100.0),   # low <= limit — fills here
+            _bar(3, low=90.0, high=99.0),    # should not be reached
+        ]
+        bus = TestBus(bars)
+        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+
+        conf = bus.get_confirmation(bus.send_order(order))
+
+        assert conf is not None
+        assert conf.filled_price == limit
+        assert conf.filled_at == bars[2].timestamp
+        assert conf.side == "SELL"
+
+    def test_sell_stop_does_not_fire_while_price_above_limit(self):
+        """Stop-loss must NOT fire while bar.low remains above the stop price."""
+        limit = 95.0
+        bars = [
+            _bar(0, low=96.0, high=105.0),
+            _bar(1, low=97.0, high=106.0),
+        ]
+        bus = TestBus(bars)
+        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+
+        conf = bus.get_confirmation(bus.send_order(order))
+
+        assert conf is None
+
+    def test_sell_stop_filled_price_is_limit_not_bar_low(self):
+        """Fill executes at limit_price (the stop price), not at the bar's low."""
+        limit = 95.0
+        bars = [_bar(0, low=88.0, high=102.0)]   # low well below limit
+        bus = TestBus(bars)
+        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+
+        conf = bus.get_confirmation(bus.send_order(order))
+
+        assert conf is not None
+        assert conf.filled_price == limit   # not 88.0
+
+
+# ---------------------------------------------------------------------------
 # MARKET orders
 # ---------------------------------------------------------------------------
 

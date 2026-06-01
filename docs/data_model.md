@@ -65,11 +65,11 @@ class AnalystOrder:
     type: Literal[
         "CANCEL_ALL_BUYS",
         "BUY_LIMIT",
-        "SELL_LIMIT",
+        "SELL_STOP",       # stop-loss sell; triggers when price drops to or below limit
         "SELL_MARKET",
         "UPDATE_STOPLOSS",
     ]
-    price:        float | None = None    # limit price (BUY_LIMIT, SELL_LIMIT, UPDATE_STOPLOSS)
+    price:        float | None = None    # limit price (BUY_LIMIT, SELL_STOP, UPDATE_STOPLOSS)
     size:         Literal["FULL_AVAILABLE_CASH", "ALL_SHARES"] | None = None
     condition:    str | None = None      # e.g. "on_fill:<order_id>"
     watermark:    int | None = None      # new watermark level, if updated by this order

@@ -9,6 +9,7 @@ Responsibility:
     Execution rules:
         BUY LIMIT   — fills on the first future bar where bar.low  <= limit_price
         SELL LIMIT  — fills on the first future bar where bar.high >= limit_price
+        STOP LIMIT (sell stop-loss) — fills on the first future bar where bar.low <= limit_price
         MARKET      — fills at the next bar's open price
         No fill     — returns None if the condition is never met within future_bars
 
@@ -98,6 +99,8 @@ class TestBus:
         """Scan future_bars and return a fill confirmation, or None."""
         if order.order_type == "MARKET":
             return self._fill_market(order)
+        if order.order_type == "STOP_LIMIT":
+            return self._fill_stop(order)
         return self._fill_limit(order)
 
     def _fill_market(self, order: BrokerOrder) -> ExecutionConfirmation | None:
@@ -113,6 +116,22 @@ class TestBus:
             filled_price=bar.open,
             filled_at=bar.timestamp,
         )
+
+    def _fill_stop(self, order: BrokerOrder) -> ExecutionConfirmation | None:
+        """Stop-loss fill: SELL triggers when bar.low drops to or below limit_price."""
+        limit_price = order.limit_price
+        for bar in self._future_bars:
+            if order.side == "SELL" and bar.low <= limit_price:
+                return ExecutionConfirmation(
+                    confirmation_id=str(uuid.uuid4()),
+                    order_id=order.order_id,
+                    ticker=order.ticker,
+                    side=order.side,
+                    filled_quantity=order.quantity,
+                    filled_price=limit_price,
+                    filled_at=bar.timestamp,
+                )
+        return None
 
     def _fill_limit(self, order: BrokerOrder) -> ExecutionConfirmation | None:
         limit_price = order.limit_price

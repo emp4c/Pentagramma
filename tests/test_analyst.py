@@ -6,7 +6,7 @@ Shared fixtures:
   bk            — Bookkeeper with 10_000 cash, no shares
   idle_status   — IDLE, no watermark, initial_nav=10_000
   long_status   — LONG, watermark=2 (pivots[2]=110, next=pivots[3]=115),
-                  pending_order_ids=["existing-stoploss"] (normal LONG state)
+                  pending_orders={"existing-stoploss": "SELL"} (normal LONG state)
 
 Timestamps (winter date, no DST, America/New_York = EST = UTC-5):
   _BEFORE  14:00 EST = 19:00 UTC — before STOP_TRADING_TIME (15:30)
@@ -85,7 +85,7 @@ def idle_status() -> MachineStatus:
         watermark_level=None,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=[],
+        pending_orders={},
         bar_count=0,
     )
 
@@ -98,7 +98,7 @@ def long_status() -> MachineStatus:
         watermark_level=2,          # pivots[2]=110; next pivot pivots[3]=115
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=["existing-stoploss"],
+        pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
 
@@ -239,7 +239,7 @@ def test_long_at_top_of_pivot_list(
         watermark_level=4,          # wm+1=5 >= len(pivots)=5
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=["existing-stoploss"],
+        pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
     with caplog.at_level(logging.WARNING, logger="src.analyst.analyst"):
@@ -301,7 +301,7 @@ def test_long_reemits_stoploss_when_no_pending(
         watermark_level=2,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=[],       # stop-loss is missing
+        pending_orders={},       # stop-loss is missing
         bar_count=0,
     )
     # close=113 → closest pivot: |113-110|=3, |113-115|=2 → idx 3 (pivots[3]=115)
@@ -323,7 +323,7 @@ def test_long_reemit_stoploss_price_anchors_to_close(
         watermark_level=1,          # original watermark at idx 1 (pivots[1]=105)
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=[],
+        pending_orders={},
         bar_count=0,
     )
     # close=118 → closest pivot: |118-120|=2, |118-115|=3 → idx 4 (pivots[4]=120)
@@ -344,7 +344,7 @@ def test_long_reemit_stoploss_skips_at_index_zero(
         watermark_level=2,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=[],
+        pending_orders={},
         bar_count=0,
     )
     # close=100 → closest pivot idx 0 → skip re-emission
@@ -367,7 +367,7 @@ def test_long_reemit_and_watermark_advance_together(
         watermark_level=2,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=[],       # stop-loss missing
+        pending_orders={},       # stop-loss missing
         bar_count=0,
     )
     # close=116 > pivots[3]=115 → watermark advances; also triggers re-emission
@@ -441,7 +441,7 @@ def test_oos_above_long_watermark_advances_through_virtual_pivot(
         watermark_level=4,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_order_ids=["existing-stoploss"],
+        pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
     result = analyse(_bar(122.0), status, pivots, _recent_bars(122.0), bk)

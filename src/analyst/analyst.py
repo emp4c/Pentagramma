@@ -22,8 +22,8 @@ the stop-loss condition string matches the live broker order ID.
 
 --- Stop-Loss Tracking Convention ---
 The single-position constraint guarantees that when the machine is LONG, every
-entry in status.pending_order_ids is a SELL order (the active stop-loss).
-Therefore: len(pending_order_ids) == 0 while LONG implies the stop-loss has
+entry in status.pending_orders is a SELL order (the active stop-loss).
+Therefore: len(pending_orders) == 0 while LONG implies the stop-loss has
 been unexpectedly removed and must be re-emitted.
 
 --- Priority Rule ---
@@ -79,7 +79,7 @@ def _emit_missing_stoploss(
     """
     Build a replacement SELL_LIMIT stop-loss anchored to the current close price.
 
-    Called when the machine is LONG but pending_order_ids is empty, which under
+    Called when the machine is LONG but pending_orders is empty, which under
     the single-position constraint means the stop-loss was unexpectedly removed.
 
     Stop-loss is re-anchored to the closest pivot to close (not the original
@@ -271,8 +271,8 @@ def analyse(
     orders = []
 
     # [Single-position stop-loss guarantee] When LONG, every pending order is a SELL.
-    # An empty pending_order_ids therefore means the stop-loss was removed unexpectedly.
-    if not status.pending_order_ids:
+    # An empty pending_orders therefore means the stop-loss was removed unexpectedly.
+    if not status.pending_orders:
         orders.extend(_emit_missing_stoploss(bar.close, pivots, bookkeeper))
 
     # Watermark advance (analyst_logic.md §LONG Step 1)

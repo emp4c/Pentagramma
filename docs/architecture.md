@@ -166,7 +166,7 @@ class MachineStatus:
     watermark_level: int | None      # index into current pivots list
     initial_nav: float               # set at session start, used for daily loss check
     session_date: date               # to detect stop_trading_time crossing
-    pending_order_ids: List[str]     # broker order IDs awaiting confirmation
+    pending_orders: Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
     bar_count: int                   # total bars processed this session (for pivot timing)
 ```
 

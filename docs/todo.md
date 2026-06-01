@@ -87,14 +87,14 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 5 — Trader
 
-- [ ] Implement `src/trader/trader.py`
-  - [ ] `process(orders: List[AnalystOrder], status: MachineStatus, bookkeeper) -> List[BrokerOrder]`
-  - [ ] Translates each AnalystOrder type to a BrokerOrder
-  - [ ] Computes share quantity from available cash and limit price
-- [ ] Write unit tests: `tests/test_trader.py`
-  - [ ] Test full cash deployment (quantity = available_cash / price)
-  - [ ] Test conditional order passes condition string through
-  - [ ] Test CANCEL_ALL_BUYS produces correct broker instruction
+- [x] Implement `src/trader/trader.py`
+  - [x] `process(orders: List[AnalystOrder], status: MachineStatus, bookkeeper, ticker) -> List[BrokerOrder]`
+  - [x] Translates each AnalystOrder type to a BrokerOrder
+  - [x] Computes share quantity from available cash and limit price
+- [x] Write unit tests: `tests/test_trader.py`
+  - [x] Test full cash deployment (quantity = available_cash / price)
+  - [x] Test conditional order passes condition string through
+  - [x] Test CANCEL_ALL_BUYS produces correct broker instruction
 
 ---
 

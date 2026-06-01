@@ -84,7 +84,7 @@ The architecture is a pipeline of stateless components communicating via explici
 - Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar], bookkeeper: Bookkeeper, recalc_hook: Callable[[], List[float]] | None = None) -> List[AnalystOrder]`
 - Contains all trading logic (see `analyst_logic.md`)
 - Returns a list of `AnalystOrder` instructions; never communicates directly with broker
-- **Entry + stop-loss flow**: on every IDLE bar where VWAP and close agree on the same pivot, the analyst emits a `BUY_LIMIT` paired with a `SELL_STOP` (stop-loss) in the same response. The stop-loss fires only after the buy fills (`condition="on_fill:<uuid>"`). Once LONG, the analyst advances a watermark each time close breaks above the next pivot, emitting `UPDATE_STOPLOSS` to trail the stop-loss upward — locking in gains without ever moving it down.
+- **Entry + stop-loss flow**: on every IDLE bar where VWAP and close agree on the same pivot, the analyst emits a `BUY_LIMIT` paired with a `SELL_STOP` (stop-loss) in the same response. The stop-loss fires only after the buy fills (`condition="on_fill:<uuid>"`). The coordinator warehouses the stop-loss internally and sends it to the broker only after the BUY confirmation arrives, at which point it knows the exact fill quantity. Once LONG, the analyst recomputes `candidate_stop = midpoint(pivot[i-1], pivot[i])` where `i` is the pivot closest to `bar.close`, and emits `UPDATE_STOPLOSS` only if `candidate_stop > status.active_stop_price` — the ratchet rule ensures the stop only ever moves up.
 
 ### Trader (`src/trader/`)
 - Stateless function: `process(orders: List[AnalystOrder], status: MachineStatus, bookkeeper: Bookkeeper) -> List[BrokerOrder]`
@@ -164,13 +164,15 @@ The `MachineStatus` dataclass is the single source of runtime state, passed expl
 ```python
 @dataclass
 class MachineStatus:
-    position: Literal["IDLE", "LONG"]
-    watermark_level: int | None      # index into current pivots list
-    initial_nav: float               # set at session start, used for daily loss check
-    session_date: date               # to detect stop_trading_time crossing
-    pending_orders: Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
-    bar_count: int                   # total bars processed this session (for pivot timing)
+    position:          Literal["IDLE", "LONG"]
+    active_stop_price: float | None      # current stop-loss price; None when IDLE or unknown
+    initial_nav:       float             # set at session start, used for daily loss check
+    session_date:      date              # to detect stop_trading_time crossing
+    pending_orders:    Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
+    bar_count:         int               # total bars processed this session (for pivot timing)
 ```
+
+`active_stop_price` is **owned by the coordinator** (batch_runner / stream_entry), not the analyst. The coordinator sets it when a BUY fill activates the entry stop-loss, when an `UPDATE_STOPLOSS` is routed, when a recovery `SELL_STOP` is routed, and clears it to `None` on a SELL fill.
 
 ---
 

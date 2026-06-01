@@ -46,7 +46,7 @@ The runtime state of the trading machine. One instance per session.
 @dataclass
 class MachineStatus:
     position:          Literal["IDLE", "LONG"]
-    watermark_level:   int | None        # index into current pivots list; None when IDLE
+    active_stop_price: float | None      # current stop-loss price; None when IDLE or unknown
     initial_nav:       float             # NAV at session start (cash + value of shares)
     session_date:      date              # calendar date of the current session (EST)
     pending_orders:    Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
@@ -72,7 +72,6 @@ class AnalystOrder:
     price:        float | None = None    # limit price (BUY_LIMIT, SELL_STOP, UPDATE_STOPLOSS)
     size:         Literal["FULL_AVAILABLE_CASH", "ALL_SHARES"] | None = None
     condition:    str | None = None      # e.g. "on_fill:<order_id>"
-    watermark:    int | None = None      # new watermark level, if updated by this order
 ```
 
 ---

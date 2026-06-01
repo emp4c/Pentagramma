@@ -81,7 +81,7 @@ Do not reorder items — dependencies flow top to bottom.
   - [x] Test IDLE: pivot_vwap != pivot_close → no entry orders
   - [x] Test IDLE: pivot_vwap == pivot_close → buy limit + stop-loss emitted
   - [x] Test IDLE: i == 0 (no pivot below) → no orders, warning logged
-  - [x] Test LONG: close above next pivot → watermark advances, stop-loss updated
+  - [x] Test LONG: close in higher pivot band → stop ratchets up (candidate > active_stop_price)
   - [x] Test LONG: post stop_trading_time → market sell emitted
 
 ---
@@ -101,15 +101,18 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 6 — Batch Runner
 
-- [ ] Implement `dev_tools/batch_runner/runner.py`
-  - [ ] `run_batch(ticker, start_date, end_date) -> List[LedgerEntry]`
-  - [ ] Slices DB: fetches 3-month lookback before start_date for pivot warm-up
-  - [ ] Pre-calculates pivot cache for all 30-bar checkpoints in the test window
-  - [ ] Replays test window bar by bar, maintaining MachineStatus
-  - [ ] Routes orders to TestBus
-  - [ ] Calls report writer on completion
-- [ ] Write integration test: `tests/test_batch_runner.py`
-  - [ ] Test with a small synthetic dataset (known pivots, known expected trades)
+- [x] Implement `dev_tools/batch_runner/runner.py`
+  - [x] `run_batch(ticker, start_date, end_date) -> RunResult`
+  - [x] Slices DB: fetches 3-month lookback before start_date for pivot warm-up
+  - [x] Pre-calculates pivot cache for all 30-bar checkpoints in the test window
+  - [x] Replays test window bar by bar, maintaining MachineStatus
+  - [x] Routes orders to TestBus
+  - [x] Calls report writer on completion
+- [x] Write integration test: `tests/test_batch_runner.py`
+  - [x] Test with a small synthetic dataset (known pivots, known expected trades)
+- [x] Refactor: conditional stop-loss warehoused as price (`float`) in coordinator; trader skips `on_fill:` SELL_STOP entirely
+- [x] Refactor: `MachineStatus.watermark_level` replaced by `active_stop_price: float | None`; analyst is fully stateless; ratchet enforced by `candidate > active_stop_price`
+- [x] Add `register_confirmation_handler` to `BrokerBusProtocol` and `TestBus` (push model for Phase 8)
 
 ---
 

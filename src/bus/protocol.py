@@ -10,16 +10,19 @@ Responsibility:
     LiveBus  (src/bus/live_bus.py)    — wraps real broker API (out of scope for now)
     TestBus  (dev_tools/test_api/)    — simulates fills from future bar data
 
-# REVIEW: In streaming mode, broker execution confirmations arrive asynchronously
-# (the broker calls back after the order is routed). In batch/test mode, the fill
-# is computed synchronously via look-ahead. This Protocol uses a synchronous
-# get_confirmation() pattern. For the LiveBus, async delivery will need a callback
-# or queue mechanism not captured here — revisit when implementing live_bus.py.
+    Confirmation delivery model:
+        Streaming: the broker pushes ExecutionConfirmation asynchronously; the
+        coordinator registers a handler via register_confirmation_handler() and
+        the LiveBus calls it on every fill event.
+        Batch/test: fills are pre-computed on send_order(); the batch runner
+        simulates the push by polling get_confirmation() at each bar and calling
+        the same handler function, preserving identical coordinator logic across
+        both modes.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 from src.models import BrokerOrder, ExecutionConfirmation
 
@@ -58,5 +61,17 @@ class BrokerBusProtocol(Protocol):
         Returns:
             ExecutionConfirmation if the order was filled, None if it expired
             unfilled, was cancelled, or is unknown.
+        """
+        ...
+
+    def register_confirmation_handler(
+        self, handler: Callable[[ExecutionConfirmation], None]
+    ) -> None:
+        """
+        Register a callback that the bus will invoke when an order fills.
+
+        In LiveBus this is called by the broker's push mechanism.
+        In TestBus this is stored but the batch runner drives delivery timing
+        by polling get_confirmation() and calling the handler itself.
         """
         ...

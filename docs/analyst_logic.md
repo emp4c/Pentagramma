@@ -117,37 +117,45 @@ size:        ALL_SHARES
 ```
 > **Edge case**: if `i == 0` (no pivot below), prepend one virtual pivot at `pivots[0] × (1 − 0.015)` to the working pivot list and set `i = 1`. The original `pivots[0]` becomes `pivots[1]` in the extended list. Order B price = `(pivots[1] + pivots[0]) / 2` in the extended list (midpoint between the original lowest pivot and the new virtual pivot). No special-casing in order construction is needed.
 
-**State updates** (via returned `AnalystOrder` — trader applies them):
-- `status.watermark_level = i`
-- `status.position = "LONG"` (set only after Order A confirmed — handled by bookkeeper/trader, not analyst)
+> `status.position = "LONG"` is set only after Order A is confirmed — handled by the coordinator (batch_runner / stream_entry), not the analyst.
 
 ---
 
 ## When Machine is LONG
 
-Before the watermark advance check, verify that a pending stop-loss order is still active (`len(status.pending_order_ids) > 0`). Under the single-position constraint every pending order while LONG is a SELL; an empty list means the stop-loss was unexpectedly removed (e.g. broker-side cancellation).
-
-**If stop-loss is missing** (`status.pending_order_ids` is empty):
-- Re-emit a `SELL_LIMIT` stop-loss anchored to the **closest pivot to `bar.close`**, not the original watermark. This ensures the protection level reflects current price rather than the stale entry level.
-  - `price = (pivots[i] + pivots[i−1]) / 2`, where `i` = index of pivot closest to `bar.close`
-- **Exception**: if the closest pivot is at index 0 (no pivot below), re-emission is skipped and a warning is logged.
-- Continue to Step 1 below. A re-emitted `SELL_LIMIT` and an `UPDATE_STOPLOSS` may appear together in the same bar's output.
-
-### Step 1 — Check for watermark advance
-- If `bar.close > pivots[watermark_level + 1]`:
-  - Update: `watermark_level += 1`
-  - Emit: `AnalystOrder(type="UPDATE_STOPLOSS", price=(pivots[watermark_level] + pivots[watermark_level - 1]) / 2)`
-  - Rationale: trail the stop-loss upward as price rises through pivots
-
-> **Edge case**: if `watermark_level + 1 >= len(pivots)` (at the top of the pivot list), update stoploss with `price=bar.close * (1 + 0.015)` — `bar.close` is the last known price (set new watermark every 1.5% gain).
-
-### Step 2 — Check for end-of-day exit
+### Step 1 — Check for end-of-day exit (Stop Condition Wins)
 - If `current_time_EST > STOP_TRADING_TIME`:
   - Emit: `AnalystOrder(type="SELL_MARKET", size="ALL_SHARES")`
   - Rationale: do not hold positions overnight
+  - This check short-circuits all remaining steps — no ratchet logic runs.
 
-### Step 3 — Otherwise
-- Emit nothing. The existing stop-loss order (placed when entering LONG) remains active with the broker.
+### Step 2 — Verify stop-loss is active
+Verify that a pending stop-loss order is still active (`len(status.pending_orders) > 0`). Under the single-position constraint every pending order while LONG is a SELL; an empty dict means the stop-loss was unexpectedly removed (e.g. broker-side cancellation).
+
+**If stop-loss is missing** (`status.pending_orders` is empty):
+- Re-emit a `SELL_STOP` stop-loss anchored to the **closest pivot to `bar.close`**.
+  - `price = (pivots[i] + pivots[i−1]) / 2`, where `i` = index of pivot closest to `bar.close`
+- **Exception**: if `i == 0` (no pivot below), re-emission is skipped and a warning is logged.
+- Continue to Step 3. A re-emitted `SELL_STOP` and an `UPDATE_STOPLOSS` may appear together in the same bar's output.
+
+### Step 3 — Trail the stop-loss (ratchet)
+
+The stop-loss is always positioned at the midpoint of the pivot band that `bar.close` is currently in:
+
+```
+i              = index of pivot closest to bar.close
+candidate_stop = (pivots[i] + pivots[i-1]) / 2
+```
+
+- If `i == 0` (no pivot below): log a warning and skip.
+- Emit `UPDATE_STOPLOSS` only if `candidate_stop > status.active_stop_price` (**ratchet rule: stop only moves up, never down**).
+- If `candidate_stop == status.active_stop_price`: price is still in the same band — emit nothing.
+- Rationale: whenever close moves into a higher pivot band (closest pivot shifts upward), the stop floor rises, locking in gains without ever reducing protection.
+
+> `status.active_stop_price` is **read-only** within `analyse()`. The coordinator (batch_runner / stream_entry) updates it when an `UPDATE_STOPLOSS` order is routed, when a recovery `SELL_STOP` is routed, and when a BUY fill activates the entry stop-loss.
+
+### Step 4 — Otherwise
+Emit nothing. The existing stop-loss order remains active with the broker.
 
 ---
 

@@ -4,8 +4,8 @@ Tests for src/analyst/analyst.py.
 Shared fixtures:
   pivots        — [100, 105, 110, 115, 120]
   bk            — Bookkeeper with 10_000 cash, no shares
-  idle_status   — IDLE, no watermark, initial_nav=10_000
-  long_status   — LONG, watermark=2 (pivots[2]=110, next=pivots[3]=115),
+  idle_status   — IDLE, active_stop_price=None, initial_nav=10_000
+  long_status   — LONG, active_stop_price=107.5 (midpoint(pivots[1]=105, pivots[2]=110)),
                   pending_orders={"existing-stoploss": "SELL"} (normal LONG state)
 
 Timestamps (winter date, no DST, America/New_York = EST = UTC-5):
@@ -82,7 +82,7 @@ def bk() -> Bookkeeper:
 def idle_status() -> MachineStatus:
     return MachineStatus(
         position="IDLE",
-        watermark_level=None,
+        active_stop_price=None,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
@@ -92,10 +92,10 @@ def idle_status() -> MachineStatus:
 
 @pytest.fixture
 def long_status() -> MachineStatus:
-    """Normal LONG state: watermark at index 2, stop-loss present in pending orders."""
+    """Normal LONG state: stop at 107.5 (midpoint of pivots[1]=105 and pivots[2]=110)."""
     return MachineStatus(
         position="LONG",
-        watermark_level=2,          # pivots[2]=110; next pivot pivots[3]=115
+        active_stop_price=107.5,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
@@ -202,50 +202,46 @@ def test_idle_stoploss_price(
 
 
 # ---------------------------------------------------------------------------
-# LONG branch — watermark advance tests
+# LONG branch — trailing stop-loss ratchet tests
 # ---------------------------------------------------------------------------
 
-def test_long_no_watermark_advance(
+def test_long_no_advance_when_stop_current(
     pivots: list[float], long_status: MachineStatus, bk: Bookkeeper
 ) -> None:
-    """close <= pivots[wm+1], stop-loss present → returns []."""
-    # wm=2, pivots[3]=115; close=113 ≤ 115
-    result = analyse(_bar(113.0), long_status, pivots, _recent_bars(113.0), bk)
+    """Close in same pivot band as current stop → candidate == active_stop_price → returns []."""
+    # active_stop_price=107.5 = midpoint(105, 110).
+    # close=109: closest pivot is 110 (idx 2), candidate=107.5 == active_stop_price → no update.
+    result = analyse(_bar(109.0), long_status, pivots, _recent_bars(109.0), bk)
     assert result == []
 
 
-def test_long_watermark_advance(
+def test_long_stop_advances_when_band_shifts(
     pivots: list[float], long_status: MachineStatus, bk: Bookkeeper
 ) -> None:
-    """close > pivots[wm+1] → watermark advances, UPDATE_STOPLOSS emitted with correct price."""
-    # wm=2, pivots[3]=115; close=116 > 115
+    """Close moves into higher pivot band → candidate > active_stop_price → UPDATE_STOPLOSS."""
+    # active_stop_price=107.5; close=116: closest pivot is 115 (idx 3), candidate=112.5 > 107.5.
     result = analyse(_bar(116.0), long_status, pivots, _recent_bars(116.0), bk)
     assert any(o.type == "UPDATE_STOPLOSS" for o in result)
     sl = next(o for o in result if o.type == "UPDATE_STOPLOSS")
-    # new_wm=3; price = (pivots[3]+pivots[2])/2 = (115+110)/2 = 112.5
-    assert sl.price == pytest.approx(_stoploss_price(pivots, 3))
-    assert sl.watermark == 3
-    assert long_status.watermark_level == 3
+    assert sl.price == pytest.approx(_stoploss_price(pivots, 3))  # (115+110)/2 = 112.5
 
 
-def test_long_at_top_of_pivot_list(
-    pivots: list[float], bk: Bookkeeper, caplog: pytest.LogCaptureFixture
+def test_long_no_advance_at_top_band(
+    pivots: list[float], bk: Bookkeeper,
 ) -> None:
-    """Watermark at last pivot index, price in-scope → returns [], warning logged."""
-    # close=120.5 is in scope (120.0 * 1.0075 = 120.9 > 120.5) so no OOS extension;
-    # wm+1=5 >= len(pivots)=5 triggers the "top of pivot list" path.
+    """Stop already at top-band level → candidate == active_stop_price → returns []."""
+    # close=120.5: closest pivot is 120 (idx 4), candidate=midpoint(120,115)=117.5.
+    # active_stop_price already at 117.5 → no update.
     status = MachineStatus(
         position="LONG",
-        watermark_level=4,          # wm+1=5 >= len(pivots)=5
+        active_stop_price=117.5,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
-    with caplog.at_level(logging.WARNING, logger="src.analyst.analyst"):
-        result = analyse(_bar(120.5), status, pivots, _recent_bars(120.5), bk)
+    result = analyse(_bar(120.5), status, pivots, _recent_bars(120.5), bk)
     assert result == []
-    assert any("top" in r.message or "cannot advance" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -270,21 +266,19 @@ def test_long_end_of_day_no_shares(
     assert result == []
 
 
-def test_long_stop_condition_wins_over_watermark_advance(
+def test_long_stop_condition_wins_over_stop_advance(
     pivots: list[float], long_status: MachineStatus, bk: Bookkeeper
 ) -> None:
     """
-    Stop Condition Wins: when close crosses next pivot AND it is post-hours,
-    only SELL_MARKET is emitted — no UPDATE_STOPLOSS.
+    Stop Condition Wins: post-hours exits with SELL_MARKET only — no UPDATE_STOPLOSS.
+    close=116 would shift the band (candidate=112.5 > 107.5), but time-exit takes priority.
     """
     _give_shares(bk)
-    # close=116 > pivots[3]=115 would advance watermark, but post-hours takes priority
     bar = _bar(116.0, ts=_AFTER)
     result = analyse(bar, long_status, pivots, _recent_bars(116.0, ts=_AFTER), bk)
     types = [o.type for o in result]
     assert types == ["SELL_MARKET"]
-    # Watermark must NOT have been advanced
-    assert long_status.watermark_level == 2
+    assert not any(o.type == "UPDATE_STOPLOSS" for o in result)
 
 
 # ---------------------------------------------------------------------------
@@ -294,18 +288,18 @@ def test_long_stop_condition_wins_over_watermark_advance(
 def test_long_reemits_stoploss_when_no_pending(
     pivots: list[float], bk: Bookkeeper
 ) -> None:
-    """pending_order_ids empty + LONG + shares > 0 → re-emits SELL_STOP stop-loss."""
+    """pending_orders empty + LONG + shares > 0 → re-emits SELL_STOP at current band level."""
     _give_shares(bk)
     status = MachineStatus(
         position="LONG",
-        watermark_level=2,
+        active_stop_price=None,  # stop was lost; price unknown
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_orders={},       # stop-loss is missing
+        pending_orders={},
         bar_count=0,
     )
     # close=113 → closest pivot: |113-110|=3, |113-115|=2 → idx 3 (pivots[3]=115)
-    # re-emitted stoploss price = (115+110)/2 = 112.5
+    # re-emitted stop price = (115+110)/2 = 112.5
     result = analyse(_bar(113.0), status, pivots, _recent_bars(113.0), bk)
     sl_orders = [o for o in result if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
@@ -316,18 +310,18 @@ def test_long_reemits_stoploss_when_no_pending(
 def test_long_reemit_stoploss_price_anchors_to_close(
     pivots: list[float], bk: Bookkeeper
 ) -> None:
-    """Re-emitted stop-loss price reflects closest pivot to bar.close, not watermark."""
+    """Re-emitted stop price anchors to closest pivot to bar.close, not any prior level."""
     _give_shares(bk)
     status = MachineStatus(
         position="LONG",
-        watermark_level=1,          # original watermark at idx 1 (pivots[1]=105)
+        active_stop_price=None,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
     )
     # close=118 → closest pivot: |118-120|=2, |118-115|=3 → idx 4 (pivots[4]=120)
-    # re-emitted stoploss = (120+115)/2 = 117.5  (different from original watermark)
+    # re-emitted stop = (120+115)/2 = 117.5
     result = analyse(_bar(118.0), status, pivots, _recent_bars(118.0), bk)
     sl_orders = [o for o in result if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
@@ -341,7 +335,7 @@ def test_long_reemit_stoploss_skips_at_index_zero(
     _give_shares(bk)
     status = MachineStatus(
         position="LONG",
-        watermark_level=2,
+        active_stop_price=None,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
@@ -354,27 +348,27 @@ def test_long_reemit_stoploss_skips_at_index_zero(
     assert any("index 0" in r.message or "pivot below" in r.message for r in caplog.records)
 
 
-def test_long_reemit_and_watermark_advance_together(
+def test_long_reemit_and_stop_advance_together(
     pivots: list[float], bk: Bookkeeper
 ) -> None:
     """
-    Missing stop-loss AND close crosses next pivot: both re-emitted SELL_LIMIT
+    Missing stop-loss AND close in a higher band: both recovery SELL_STOP
     and UPDATE_STOPLOSS appear in the same bar.
+    active_stop_price=107.5; close=116 → closest pivot=115, candidate=112.5 > 107.5.
     """
     _give_shares(bk)
     status = MachineStatus(
         position="LONG",
-        watermark_level=2,
+        active_stop_price=107.5,  # last known stop price before order was lost
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
-        pending_orders={},       # stop-loss missing
+        pending_orders={},
         bar_count=0,
     )
-    # close=116 > pivots[3]=115 → watermark advances; also triggers re-emission
     result = analyse(_bar(116.0), status, pivots, _recent_bars(116.0), bk)
     types = [o.type for o in result]
-    assert "SELL_STOP" in types         # re-emitted stop-loss
-    assert "UPDATE_STOPLOSS" in types   # watermark advance
+    assert "SELL_STOP" in types
+    assert "UPDATE_STOPLOSS" in types
 
 
 # ---------------------------------------------------------------------------
@@ -426,19 +420,18 @@ def test_oos_extend_below_prepends_sorted_virtual_pivots() -> None:
     assert extended == sorted(extended)                    # still ascending
 
 
-def test_oos_above_long_watermark_advances_through_virtual_pivot(
+def test_oos_above_long_stop_advances_through_virtual_pivot(
     bk: Bookkeeper,
 ) -> None:
     """
-    LONG + OOS above: virtual pivots are added, watermark can advance through them.
-    close=122 > virtual_pivot[5]=121.8 → UPDATE_STOPLOSS emitted at correct price.
+    LONG + OOS above: virtual pivot added at 121.8; close=122 closest to 121.8 (idx 5).
+    candidate = (121.8 + 120) / 2 = 120.9 > active_stop_price=117.5 → UPDATE_STOPLOSS.
     """
     _give_shares(bk)
     pivots = [100.0, 105.0, 110.0, 115.0, 120.0]
-    # close=122 → extended to [..., 120, 121.8]; close > 121.8 → wm advances from 4 to 5
     status = MachineStatus(
         position="LONG",
-        watermark_level=4,
+        active_stop_price=117.5,  # midpoint(120, 115) — stop was at top real band
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
@@ -447,8 +440,7 @@ def test_oos_above_long_watermark_advances_through_virtual_pivot(
     result = analyse(_bar(122.0), status, pivots, _recent_bars(122.0), bk)
     sl = next((o for o in result if o.type == "UPDATE_STOPLOSS"), None)
     assert sl is not None
-    assert sl.price == pytest.approx((120.0 * 1.015 + 120.0) / 2)  # (121.8 + 120) / 2
-    assert status.watermark_level == 5
+    assert sl.price == pytest.approx((120.0 * 1.015 + 120.0) / 2)  # (121.8 + 120) / 2 = 120.9
 
 
 def test_oos_idle_entry_orders_emitted_via_virtual_pivot(

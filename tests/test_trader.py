@@ -28,12 +28,12 @@ _TS = datetime(2026, 1, 15, 19, 0, tzinfo=timezone.utc)
 
 def _make_status(
     position: str = "IDLE",
-    watermark_level: int | None = None,
+    active_stop_price: float | None = None,
     pending_orders: dict | None = None,
 ) -> MachineStatus:
     return MachineStatus(
         position=position,
-        watermark_level=watermark_level,
+        active_stop_price=active_stop_price,
         initial_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders=pending_orders if pending_orders is not None else {},
@@ -153,22 +153,16 @@ def test_buy_limit_quantity_less_than_one_skipped(caplog: pytest.LogCaptureFixtu
 # SELL_STOP
 # ---------------------------------------------------------------------------
 
-def test_sell_stop_quantity_from_shares() -> None:
-    """quantity = shares_held(); condition string passed through to BrokerOrder."""
+def test_sell_stop_conditional_skipped_by_trader() -> None:
+    """Conditional SELL_STOP (on_fill:) is warehoused by coordinator; trader emits nothing."""
     bk = _bk_with_shares(qty=10.0, price=100.0)
     result = process(
-        [AnalystOrder(type="SELL_STOP", price=95.0, size="ALL_SHARES",
-                      condition="on_fill:uuid-1")],
-        _make_status("LONG", watermark_level=1),
+        [AnalystOrder(type="SELL_STOP", price=95.0, condition="on_fill:uuid-1")],
+        _make_status("LONG", active_stop_price=102.5),
         bk,
         "TEST",
     )
-    assert len(result) == 1
-    assert result[0].side == "SELL"
-    assert result[0].order_type == "STOP_LIMIT"
-    assert result[0].quantity == 10.0
-    assert result[0].limit_price == 95.0
-    assert result[0].condition == "on_fill:uuid-1"
+    assert result == []
 
 
 def test_sell_stop_zero_shares_skipped(caplog: pytest.LogCaptureFixture) -> None:
@@ -194,7 +188,7 @@ def test_sell_market_produces_market_order() -> None:
     bk = _bk_with_shares(qty=10.0, price=100.0)
     result = process(
         [AnalystOrder(type="SELL_MARKET", size="ALL_SHARES")],
-        _make_status("LONG", watermark_level=1),
+        _make_status("LONG", active_stop_price=102.5),
         bk,
         "TEST",
     )
@@ -258,10 +252,10 @@ def test_cancel_all_buys_empty_pending_produces_nothing() -> None:
 def test_update_stoploss_cancels_old_and_creates_new() -> None:
     """Existing SELL in pending_orders → CANCEL the old + fresh STOP_LIMIT at new price."""
     bk = _bk_with_shares(qty=10.0, price=100.0)
-    status = _make_status("LONG", watermark_level=2,
+    status = _make_status("LONG", active_stop_price=107.5,
                           pending_orders={"stoploss-id": "SELL"})
     result = process(
-        [AnalystOrder(type="UPDATE_STOPLOSS", price=105.0, watermark=3)],
+        [AnalystOrder(type="UPDATE_STOPLOSS", price=105.0)],
         status,
         bk,
         "TEST",
@@ -280,7 +274,7 @@ def test_update_stoploss_cancels_old_and_creates_new() -> None:
 def test_update_stoploss_no_existing_creates_fresh(caplog: pytest.LogCaptureFixture) -> None:
     """No SELL in pending_orders → warning logged, fresh STOP_LIMIT created from shares_held."""
     bk = _bk_with_shares(qty=10.0, price=100.0)
-    status = _make_status("LONG", watermark_level=2, pending_orders={})
+    status = _make_status("LONG", active_stop_price=107.5, pending_orders={})
     with caplog.at_level(logging.WARNING, logger="src.trader.trader"):
         result = process(
             [AnalystOrder(type="UPDATE_STOPLOSS", price=105.0)],

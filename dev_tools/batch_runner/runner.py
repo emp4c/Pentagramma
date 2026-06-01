@@ -6,22 +6,48 @@ Responsibility:
     Slices the long-term OHLCV DB to obtain a 3-month lookback window (for pivot
     warm-up) plus the test window. Replays the test window bar-by-bar in time order,
     maintaining MachineStatus, routing orders to TestBus, and accumulating the ledger.
-    On completion, calls the report writer.
+
+    Conditional stop-losses (condition="on_fill:<buy_id>") are held in a local
+    dict and only dispatched to TestBus once their paired BUY order fills.
 
     Parallelism: may run multiple (ticker, start, end) test cases concurrently using
     concurrent.futures or similar. Each run has its own independent MachineStatus and
     Bookkeeper instance.
 
 Public interface:
-    run_batch(ticker, start_date, end_date, initial_cash) -> List[LedgerEntry]
+    RunResult                   — return-value dataclass
+    run_batch(ticker, start_date, end_date, initial_cash, _override_bars) -> RunResult
 """
 
 from __future__ import annotations
 
-from datetime import date
-from typing import List
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Dict, List
 
-from src.models import LedgerEntry
+from src.analyst.analyst import analyse
+from src.bookkeeper.bookkeeper import Bookkeeper
+from src.config import PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
+from src.models import BrokerOrder, LedgerEntry, MachineStatus, OHLCVBar
+from src.pivot.pivot_calc import build_pivots
+from src.scriber.db import fetch_bars
+from src.trader.trader import process
+from dev_tools.batch_runner.pivot_cache import load_cache, save_cache
+from dev_tools.test_api.test_bus import TestBus
+
+_logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RunResult:
+    ticker: str
+    start_date: date
+    end_date: date
+    ledger: List[LedgerEntry]
+    bars_processed: int
+    final_nav: float
 
 
 def run_batch(
@@ -29,30 +55,189 @@ def run_batch(
     start_date: date,
     end_date: date,
     initial_cash: float = 10_000.0,
-) -> List[LedgerEntry]:
+    _override_bars: tuple[list[OHLCVBar], list[OHLCVBar]] | None = None,
+) -> RunResult:
     """
-    Execute a simulated trading session and return the resulting ledger.
+    Execute a simulated trading session and return the run result.
 
     Args:
-        ticker:       Ticker symbol to trade (e.g. "AAPL").
-        start_date:   First date of the *test* window (time-zero for simulation).
-                      Bars before this date (up to PIVOT_LOOKBACK_DAYS back) are
-                      used only to warm up the pivot builder.
-        end_date:     Last date of the test window (inclusive).
-        initial_cash: Starting cash for the session.
+        ticker:          Ticker symbol.
+        start_date:      Start of the test window. Bars before this provide pivot warm-up.
+        end_date:        End of the test window (inclusive).
+        initial_cash:    Starting cash for the session.
+        _override_bars:  (lookback_bars, test_window) injected directly — skips DB fetch
+                         and pivot cache. For testing only; must not affect production.
 
     Returns:
-        The complete list of LedgerEntry records produced during the session.
-        Also writes a report to outputs/active/ via the report writer.
-
-    Steps:
-        1. Fetch lookback bars (start_date - PIVOT_LOOKBACK_DAYS → start_date).
-        2. Pre-calculate pivot snapshots at every 30-bar checkpoint → pivot cache.
-        3. For each bar in the test window (sequential):
-            a. Inject cached pivots if at a 30-bar checkpoint.
-            b. Call analyst(bar, status, pivots, recent_bars) → AnalystOrders.
-            c. Call trader(AnalystOrders, status, bookkeeper) → BrokerOrders.
-            d. Send each BrokerOrder to TestBus; pass back confirmations to bookkeeper.
-        4. Call report_writer on completion.
+        RunResult with the full ledger, bar count, and final NAV.
     """
-    raise NotImplementedError
+    # ------------------------------------------------------------------
+    # Step 1: Obtain lookback window and test window bars
+    # ------------------------------------------------------------------
+    if _override_bars is not None:
+        lookback_bars, test_window = _override_bars
+    else:
+        lookback_start = datetime.combine(
+            start_date - timedelta(days=PIVOT_LOOKBACK_DAYS), time.min, tzinfo=timezone.utc
+        )
+        lookback_end = datetime.combine(
+            start_date - timedelta(days=1), time.max, tzinfo=timezone.utc
+        )
+        test_start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        test_end = datetime.combine(end_date, time.max, tzinfo=timezone.utc)
+        lookback_bars = fetch_bars(ticker, lookback_start, lookback_end)
+        test_window = fetch_bars(ticker, test_start, test_end)
+
+    if not test_window:
+        return RunResult(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            ledger=[],
+            bars_processed=0,
+            final_nav=initial_cash,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 2: Build or load pivot cache
+    # ------------------------------------------------------------------
+    if _override_bars is not None:
+        # Always recompute for test runs to avoid stale on-disk state
+        pivot_cache_data = _build_pivot_cache(lookback_bars, test_window)
+    else:
+        pivot_cache_data = load_cache(ticker, start_date, end_date)
+        if pivot_cache_data is None:
+            pivot_cache_data = _build_pivot_cache(lookback_bars, test_window)
+            save_cache(ticker, start_date, end_date, pivot_cache_data)
+
+    # ------------------------------------------------------------------
+    # Step 3: Initialise session state
+    # ------------------------------------------------------------------
+    bookkeeper = Bookkeeper(initial_cash)
+    status = MachineStatus(
+        position="IDLE",
+        active_stop_price=None,
+        initial_nav=initial_cash,
+        session_date=start_date,
+        pending_orders={},
+        bar_count=0,
+    )
+    test_bus = TestBus(test_window)
+    # buy_order_id → stop-loss limit price (warehoused until BUY fills)
+    pending_stop_losses: Dict[str, float] = {}
+    current_pivots: list[float] = []
+
+    # ------------------------------------------------------------------
+    # Step 4: Bar-by-bar simulation loop
+    # ------------------------------------------------------------------
+    for t, bar in enumerate(test_window):
+
+        # 4a: Inject pivot snapshot at each 30-bar checkpoint
+        if t % PIVOT_INTERVAL_BARS == 0:
+            current_pivots = pivot_cache_data.get(t, [])
+
+        # 4b: Collect recent bars for VWAP
+        recent_bars = test_window[max(0, t - VWAP_WINDOW_BARS + 1): t + 1]
+
+        # 4c: Poll pending orders for fills that have arrived by this bar
+        for order_id in list(status.pending_orders):
+            conf = test_bus.get_confirmation(order_id)
+            if conf is None or conf.filled_at > bar.timestamp:
+                continue
+            bookkeeper.receive_confirmation(conf)
+            del status.pending_orders[order_id]
+
+            if conf.side == "BUY":
+                status.position = "LONG"
+                if order_id in pending_stop_losses:
+                    stop_price = pending_stop_losses.pop(order_id)
+                    status.active_stop_price = stop_price
+                    stop_order = BrokerOrder(
+                        order_id=str(uuid.uuid4()),
+                        ticker=ticker,
+                        side="SELL",
+                        order_type="STOP_LIMIT",
+                        limit_price=stop_price,
+                        quantity=conf.filled_quantity,
+                        condition=None,
+                        created_at=datetime.now(timezone.utc),
+                    )
+                    test_bus.send_order(stop_order, current_bar_index=t)
+                    status.pending_orders[stop_order.order_id] = "SELL"
+                else:
+                    status.active_stop_price = None
+
+            elif conf.side == "SELL":
+                status.position = "IDLE"
+                status.active_stop_price = None
+
+        # 4d: Run analyst
+        analyst_orders = analyse(
+            bar, status, current_pivots, recent_bars, bookkeeper, recalc_hook=None
+        )
+
+        # Capture warehoused data from analyst orders before translation.
+        # Conditional SELL_STOP: warehouse stop price — trader skips these, coordinator
+        # sends the real order with correct quantity once the BUY fill arrives (step 4c).
+        # UPDATE_STOPLOSS / recovery SELL_STOP: update active_stop_price immediately so
+        # the next bar's analyst sees the current ratchet level.
+        for ao in analyst_orders:
+            if ao.type == "SELL_STOP" and ao.condition and ao.condition.startswith("on_fill:"):
+                pending_stop_losses[ao.condition[len("on_fill:"):]] = ao.price
+            elif ao.type == "UPDATE_STOPLOSS":
+                status.active_stop_price = ao.price
+            elif ao.type == "SELL_STOP":
+                status.active_stop_price = ao.price  # recovery stop (non-conditional)
+
+        # 4e: Translate to broker orders
+        broker_orders = process(analyst_orders, status, bookkeeper, ticker)
+
+        # 4f: Route each broker order to the bus or to local holding structures
+        for broker_order in broker_orders:
+            if broker_order.order_type == "CANCEL":
+                test_bus.cancel_order(broker_order.order_id)
+                status.pending_orders.pop(broker_order.order_id, None)
+                if broker_order.side == "BUY":
+                    pending_stop_losses.pop(broker_order.order_id, None)
+
+            else:
+                test_bus.send_order(broker_order, current_bar_index=t)
+                status.pending_orders[broker_order.order_id] = broker_order.side
+
+        status.bar_count += 1
+
+    # ------------------------------------------------------------------
+    # Step 5: Compute final NAV and return
+    # ------------------------------------------------------------------
+    last_bar = test_window[-1]
+    final_nav = bookkeeper.current_nav(last_bar.close)
+
+    return RunResult(
+        ticker=ticker,
+        start_date=start_date,
+        end_date=end_date,
+        ledger=bookkeeper.get_ledger(),
+        bars_processed=len(test_window),
+        final_nav=final_nav,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _build_pivot_cache(
+    lookback_bars: list[OHLCVBar],
+    test_window: list[OHLCVBar],
+) -> Dict[int, list[float]]:
+    """
+    Pre-compute pivot snapshots at every PIVOT_INTERVAL_BARS checkpoint.
+
+    At checkpoint c the input is (lookback_bars + test_window[:c]), reflecting
+    all bars known to the system at that point in time.
+    """
+    cache: Dict[int, list[float]] = {}
+    for c in range(0, len(test_window), PIVOT_INTERVAL_BARS):
+        input_bars = lookback_bars + test_window[:c]
+        cache[c] = build_pivots(input_bars)
+    return cache

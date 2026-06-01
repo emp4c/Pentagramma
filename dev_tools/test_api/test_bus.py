@@ -20,9 +20,13 @@ Responsibility:
     bus knows the full future sequence. get_confirmation() returns the pre-computed
     result synchronously.
 
+    current_bar_index: when passed to send_order(), the bus uses
+        all_bars[current_bar_index + 1:] as the future bar slice. When omitted,
+        all bars supplied at construction are treated as future (backward compat).
+
 Public interface:
-    TestBus(future_bars: List[OHLCVBar])
-    send_order(order: BrokerOrder) -> str
+    TestBus(all_bars: List[OHLCVBar])
+    send_order(order: BrokerOrder, current_bar_index: int | None = None) -> str
     cancel_order(order_id: str) -> bool
     get_confirmation(order_id: str) -> ExecutionConfirmation | None
 """
@@ -30,7 +34,7 @@ Public interface:
 from __future__ import annotations
 
 import uuid
-from typing import List
+from typing import Callable, List
 
 from src.models import BrokerOrder, ExecutionConfirmation, OHLCVBar
 
@@ -40,26 +44,42 @@ class TestBus:
     Simulated broker bus for batch testing.
 
     Args:
-        future_bars: All bars after the current simulation point, in chronological
-                     order. The bus scans these to determine if and when an order fills.
+        all_bars: The complete bar sequence available for fill simulation.
+                  When send_order() is called with current_bar_index=t, only
+                  all_bars[t+1:] are considered future. Without current_bar_index,
+                  all bars are treated as future (backward-compatible behaviour).
     """
 
-    def __init__(self, future_bars: List[OHLCVBar]) -> None:
-        self._future_bars = future_bars
-        # Maps order_id → ExecutionConfirmation (or None if order never filled)
+    def __init__(self, all_bars: List[OHLCVBar]) -> None:
+        self._all_bars = all_bars
         self._confirmations: dict[str, ExecutionConfirmation | None] = {}
-        # Tracks order_ids that resulted in a fill
         self._filled_ids: set[str] = set()
+        self._confirmation_handler: Callable[[ExecutionConfirmation], None] | None = None
 
-    def send_order(self, order: BrokerOrder) -> str:
+    def send_order(
+        self,
+        order: BrokerOrder,
+        current_bar_index: int | None = None,
+    ) -> str:
         """
         Simulate order execution against future bar data. Fill is computed
         immediately via look-ahead; result is stored for get_confirmation().
 
+        Args:
+            order:             The broker order to simulate.
+            current_bar_index: Index of the bar being processed. Future bars are
+                               all_bars[current_bar_index + 1:]. When None, all
+                               bars supplied at construction are used as future.
+
         Returns:
             order.order_id (confirms the order was received).
         """
-        conf = self._simulate(order)
+        if current_bar_index is None:
+            future_bars = self._all_bars
+        else:
+            future_bars = self._all_bars[current_bar_index + 1:]
+
+        conf = self._simulate(order, future_bars)
         self._confirmations[order.order_id] = conf
         if conf is not None:
             self._filled_ids.add(order.order_id)
@@ -91,22 +111,36 @@ class TestBus:
         """
         return self._confirmations.get(order_id)
 
+    def register_confirmation_handler(
+        self, handler: Callable[[ExecutionConfirmation], None]
+    ) -> None:
+        """
+        Store a callback for fill events. In batch mode the runner drives
+        delivery timing by polling get_confirmation(); this stored handler
+        mirrors what LiveBus would call on a broker push in streaming mode.
+        """
+        self._confirmation_handler = handler
+
     # ------------------------------------------------------------------
     # Internal fill simulation
     # ------------------------------------------------------------------
 
-    def _simulate(self, order: BrokerOrder) -> ExecutionConfirmation | None:
+    def _simulate(
+        self, order: BrokerOrder, future_bars: List[OHLCVBar]
+    ) -> ExecutionConfirmation | None:
         """Scan future_bars and return a fill confirmation, or None."""
         if order.order_type == "MARKET":
-            return self._fill_market(order)
+            return self._fill_market(order, future_bars)
         if order.order_type == "STOP_LIMIT":
-            return self._fill_stop(order)
-        return self._fill_limit(order)
+            return self._fill_stop(order, future_bars)
+        return self._fill_limit(order, future_bars)
 
-    def _fill_market(self, order: BrokerOrder) -> ExecutionConfirmation | None:
-        if not self._future_bars:
+    def _fill_market(
+        self, order: BrokerOrder, future_bars: List[OHLCVBar]
+    ) -> ExecutionConfirmation | None:
+        if not future_bars:
             return None
-        bar = self._future_bars[0]
+        bar = future_bars[0]
         return ExecutionConfirmation(
             confirmation_id=str(uuid.uuid4()),
             order_id=order.order_id,
@@ -117,10 +151,12 @@ class TestBus:
             filled_at=bar.timestamp,
         )
 
-    def _fill_stop(self, order: BrokerOrder) -> ExecutionConfirmation | None:
+    def _fill_stop(
+        self, order: BrokerOrder, future_bars: List[OHLCVBar]
+    ) -> ExecutionConfirmation | None:
         """Stop-loss fill: SELL triggers when bar.low drops to or below limit_price."""
         limit_price = order.limit_price
-        for bar in self._future_bars:
+        for bar in future_bars:
             if order.side == "SELL" and bar.low <= limit_price:
                 return ExecutionConfirmation(
                     confirmation_id=str(uuid.uuid4()),
@@ -133,9 +169,11 @@ class TestBus:
                 )
         return None
 
-    def _fill_limit(self, order: BrokerOrder) -> ExecutionConfirmation | None:
+    def _fill_limit(
+        self, order: BrokerOrder, future_bars: List[OHLCVBar]
+    ) -> ExecutionConfirmation | None:
         limit_price = order.limit_price
-        for bar in self._future_bars:
+        for bar in future_bars:
             if order.side == "BUY" and bar.low <= limit_price:
                 return ExecutionConfirmation(
                     confirmation_id=str(uuid.uuid4()),

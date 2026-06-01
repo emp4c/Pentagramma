@@ -102,6 +102,8 @@ def process(
             ))
 
         elif order.type == "SELL_STOP":
+            if order.condition is not None and order.condition.startswith("on_fill:"):
+                continue  # warehoused by coordinator; emitted only after BUY fills
             shares = bookkeeper.shares_held()
             if shares == 0.0:
                 _logger.warning(

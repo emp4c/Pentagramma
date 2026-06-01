@@ -187,7 +187,8 @@ def analyse(
 
     Args:
         bar:         The latest closed 1-minute bar.
-        status:      Current machine state (mutable — watermark_level may be updated).
+        status:      Current machine state (read-only within analyse — coordinator
+                     updates active_stop_price when orders are routed).
         pivots:      Current pivot list, sorted ascending. Immutable within the
                      30-bar window in which it was computed.
         recent_bars: The last VWAP_WINDOW_BARS bars (including `bar`), used to
@@ -246,7 +247,6 @@ def analyse(
             price=pivots[i] * (1 - BUY_LIMIT_OFFSET),
             size="FULL_AVAILABLE_CASH",
             condition=order_uuid,   # trader reads this as the intended BrokerOrder.order_id
-            watermark=i,
         ))
         orders.append(AnalystOrder(
             type="SELL_STOP",
@@ -275,22 +275,21 @@ def analyse(
     if not status.pending_orders:
         orders.extend(_emit_missing_stoploss(bar.close, pivots, bookkeeper))
 
-    # Watermark advance (analyst_logic.md §LONG Step 1)
-    wm = status.watermark_level
-
-    if wm + 1 >= len(pivots):
+    # Trailing stop-loss ratchet: advance only when close is now in a higher pivot band.
+    # The stop is always midpoint(pivot[i-1], pivot[i]) where pivot[i] is the closest
+    # pivot to close. It only moves up — never down (ratchet: candidate > active_stop_price).
+    _, i = _closest_pivot(bar.close, pivots)
+    if i == 0:
         _logger.warning(
-            "Watermark at top of pivot list (index %d) — cannot advance further", wm
+            "Price %.4f at or below lowest pivot — cannot advance stop-loss", bar.close,
         )
-        return orders  # include any re-emitted stop-loss
+        return orders
 
-    if bar.close > pivots[wm + 1]:
-        new_wm = wm + 1
-        status.watermark_level = new_wm
+    candidate = _stoploss_price(pivots, i)
+    if status.active_stop_price is not None and candidate > status.active_stop_price:
         orders.append(AnalystOrder(
             type="UPDATE_STOPLOSS",
-            price=_stoploss_price(pivots, new_wm),
-            watermark=new_wm,
+            price=candidate,
         ))
 
     return orders

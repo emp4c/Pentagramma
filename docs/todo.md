@@ -113,6 +113,7 @@ Do not reorder items — dependencies flow top to bottom.
 - [x] Refactor: conditional stop-loss warehoused as price (`float`) in coordinator; trader skips `on_fill:` SELL_STOP entirely
 - [x] Refactor: `MachineStatus.watermark_level` replaced by `active_stop_price: float | None`; analyst is fully stateless; ratchet enforced by `candidate > active_stop_price`
 - [x] Add `register_confirmation_handler` to `BrokerBusProtocol` and `TestBus` (push model for Phase 8)
+- [x] Add `daily_start_nav` to `MachineStatus`; coordinator resets it at each EST day boundary so the daily loss limit re-anchors each day and does not permanently block trading after a losing day
 
 ---
 

@@ -166,13 +166,16 @@ The `MachineStatus` dataclass is the single source of runtime state, passed expl
 class MachineStatus:
     position:          Literal["IDLE", "LONG"]
     active_stop_price: float | None      # current stop-loss price; None when IDLE or unknown
-    initial_nav:       float             # set at session start, used for daily loss check
-    session_date:      date              # to detect stop_trading_time crossing
+    initial_nav:       float             # NAV at session start (cash + value of shares)
+    daily_start_nav:   float             # NAV at start of current trading day; reset by coordinator on day boundary
+    session_date:      date              # calendar date of the current session (EST)
     pending_orders:    Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
     bar_count:         int               # total bars processed this session (for pivot timing)
 ```
 
 `active_stop_price` is **owned by the coordinator** (batch_runner / stream_entry), not the analyst. The coordinator sets it when a BUY fill activates the entry stop-loss, when an `UPDATE_STOPLOSS` is routed, when a recovery `SELL_STOP` is routed, and clears it to `None` on a SELL fill.
+
+`daily_start_nav` is also **owned by the coordinator**. It is initialised to `initial_cash` at session start, then reset to `bookkeeper.available_cash()` at the first bar of each new EST calendar day. The analyst reads it to anchor the daily loss limit check so the threshold resets each day.
 
 ---
 

@@ -84,6 +84,7 @@ def idle_status() -> MachineStatus:
         position="IDLE",
         active_stop_price=None,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
@@ -97,6 +98,7 @@ def long_status() -> MachineStatus:
         position="LONG",
         active_stop_price=107.5,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
@@ -109,7 +111,7 @@ def long_status() -> MachineStatus:
 
 def test_stop_daily_loss_returns_empty(pivots: list[float], idle_status: MachineStatus) -> None:
     """Daily loss limit breached while IDLE → returns []."""
-    threshold = idle_status.initial_nav * (1 - DAILY_LOSS_LIMIT)   # 9700.0
+    threshold = idle_status.daily_start_nav * (1 - DAILY_LOSS_LIMIT)   # 9700.0
     low_cash = threshold + MIN_CASH_RESERVE - 1.0                   # available = threshold-1
     bk = Bookkeeper(initial_cash=low_cash)
     result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
@@ -236,6 +238,7 @@ def test_long_no_advance_at_top_band(
         position="LONG",
         active_stop_price=117.5,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
@@ -294,6 +297,7 @@ def test_long_reemits_stoploss_when_no_pending(
         position="LONG",
         active_stop_price=None,  # stop was lost; price unknown
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
@@ -316,6 +320,7 @@ def test_long_reemit_stoploss_price_anchors_to_close(
         position="LONG",
         active_stop_price=None,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
@@ -337,6 +342,7 @@ def test_long_reemit_stoploss_skips_at_index_zero(
         position="LONG",
         active_stop_price=None,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
@@ -361,6 +367,7 @@ def test_long_reemit_and_stop_advance_together(
         position="LONG",
         active_stop_price=107.5,  # last known stop price before order was lost
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={},
         bar_count=0,
@@ -433,6 +440,7 @@ def test_oos_above_long_stop_advances_through_virtual_pivot(
         position="LONG",
         active_stop_price=117.5,  # midpoint(120, 115) — stop was at top real band
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,

@@ -35,6 +35,7 @@ def _make_status(
         position=position,
         active_stop_price=active_stop_price,
         initial_nav=10_000.0,
+        daily_start_nav=10_000.0,
         session_date=date(2026, 1, 15),
         pending_orders=pending_orders if pending_orders is not None else {},
         bar_count=0,

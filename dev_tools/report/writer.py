@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Tuple
 
+from src.config import PIVOT_INTERVAL_BARS
 from src.models import BrokerOrder, ExecutionConfirmation, LedgerEntry, OHLCVBar
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ def write_report(
     sections: List[str] = []
     sections.extend(_header(result, now_est))
     sections.append("")
-    sections.extend(_bar_section(result, bars))
+    sections.extend(_bar_section(result, bars, result.pivot_snapshots))
     sections.append("")
     sections.extend(_trade_summary(result, bars))
 
@@ -87,7 +88,11 @@ def _header(result: "RunResult", now_est: datetime) -> List[str]:
     ]
 
 
-def _bar_section(result: "RunResult", bars: List[OHLCVBar]) -> List[str]:
+def _bar_section(
+    result: "RunResult",
+    bars: List[OHLCVBar],
+    pivot_snapshots: Dict[int, List[float]],
+) -> List[str]:
     fills_at: Dict[int, List[ExecutionConfirmation]] = {}
     for bi, conf in result.execution_log:
         fills_at.setdefault(bi, []).append(conf)
@@ -104,12 +109,16 @@ def _bar_section(result: "RunResult", bars: List[OHLCVBar]) -> List[str]:
         for conf in fills_at.get(t, []):
             position = "LONG" if conf.side == "BUY" else "IDLE"
 
+        checkpoint = (t // PIVOT_INTERVAL_BARS) * PIVOT_INTERVAL_BARS
+        active_pivots = pivot_snapshots.get(checkpoint, [])
+
         ts_est = _to_est(bar.timestamp).strftime("%Y-%m-%d %H:%M")
         ohlcv = (
             f"O:{bar.open:<8.2f}H:{bar.high:<8.2f}"
             f"L:{bar.low:<8.2f}C:{bar.close:<8.2f}"
             f"V:{int(bar.volume)}"
         )
+        pvt = _pivot_triplet(active_pivots, bar.close)
 
         parts: List[str] = []
         for conf in fills_at.get(t, []):
@@ -118,7 +127,7 @@ def _bar_section(result: "RunResult", bars: List[OHLCVBar]) -> List[str]:
             parts.append(_order_label(order))
 
         activity = "  ".join(parts) if parts else "—"
-        lines.append(f"{ts_est} | {ohlcv} | {position:<4} | {activity}")
+        lines.append(f"{ts_est} | {ohlcv} | {pvt} | {position:<4} | {activity}")
 
     return lines
 
@@ -207,6 +216,16 @@ def _trade_summary(result: "RunResult", bars: List[OHLCVBar]) -> List[str]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _pivot_triplet(pivots: List[float], close: float) -> str:
+    if not pivots:
+        return "p-1:—     p:—       p+1:—    "
+    i = min(range(len(pivots)), key=lambda k: abs(pivots[k] - close))
+    prev = f"{pivots[i - 1]:.2f}" if i > 0           else "—"
+    curr = f"{pivots[i]:.2f}"
+    nxt  = f"{pivots[i + 1]:.2f}" if i < len(pivots) - 1 else "—"
+    return f"p-1:{prev:<8} p:{curr:<8} p+1:{nxt:<8}"
+
 
 def _to_est(dt: datetime) -> datetime:
     return dt.astimezone(_EST)

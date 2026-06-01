@@ -181,7 +181,7 @@ class TestBus:
                     ticker=order.ticker,
                     side=order.side,
                     filled_quantity=order.quantity,
-                    filled_price=limit_price,
+                    filled_price=min(limit_price, bar.close),
                     filled_at=bar.timestamp,
                 )
             if order.side == "SELL" and bar.high >= limit_price:

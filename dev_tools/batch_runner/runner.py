@@ -25,6 +25,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, List
 
 from src.analyst.analyst import analyse
@@ -38,6 +39,7 @@ from dev_tools.batch_runner.pivot_cache import load_cache, save_cache
 from dev_tools.test_api.test_bus import TestBus
 
 _logger = logging.getLogger(__name__)
+_EST = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -49,8 +51,9 @@ class RunResult:
     ledger:        List[LedgerEntry]
     bars_processed: int
     final_nav:     float
-    order_log:     List[tuple[int, BrokerOrder]]              = field(default_factory=list)
-    execution_log: List[tuple[int, ExecutionConfirmation]]    = field(default_factory=list)
+    order_log:       List[tuple[int, BrokerOrder]]            = field(default_factory=list)
+    execution_log:   List[tuple[int, ExecutionConfirmation]]  = field(default_factory=list)
+    pivot_snapshots: Dict[int, List[float]]                   = field(default_factory=dict)
 
 
 def run_batch(
@@ -124,6 +127,7 @@ def run_batch(
         position="IDLE",
         active_stop_price=None,
         initial_nav=initial_cash,
+        daily_start_nav=initial_cash,
         session_date=start_date,
         pending_orders={},
         bar_count=0,
@@ -182,7 +186,13 @@ def run_batch(
                 status.position = "IDLE"
                 status.active_stop_price = None
 
-        # 4d: Run analyst
+        # 4d: Day-boundary reset — reset daily_start_nav at the first bar of each new calendar day
+        bar_date = bar.timestamp.astimezone(_EST).date()
+        if bar_date != status.session_date:
+            status.daily_start_nav = bookkeeper.available_cash()
+            status.session_date = bar_date
+
+        # 4e: Run analyst
         analyst_orders = analyse(
             bar, status, current_pivots, recent_bars, bookkeeper, recalc_hook=None
         )
@@ -200,10 +210,10 @@ def run_batch(
             elif ao.type == "SELL_STOP":
                 status.active_stop_price = ao.price  # recovery stop (non-conditional)
 
-        # 4e: Translate to broker orders
+        # 4f: Translate to broker orders
         broker_orders = process(analyst_orders, status, bookkeeper, ticker)
 
-        # 4f: Route each broker order to the bus or to local holding structures
+        # 4g: Route each broker order to the bus or to local holding structures
         for broker_order in broker_orders:
             if broker_order.order_type == "CANCEL":
                 test_bus.cancel_order(broker_order.order_id)
@@ -234,6 +244,7 @@ def run_batch(
         final_nav=final_nav,
         order_log=order_log,
         execution_log=execution_log,
+        pivot_snapshots=pivot_cache_data,
     )
 
     # ------------------------------------------------------------------

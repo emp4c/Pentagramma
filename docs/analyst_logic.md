@@ -76,8 +76,9 @@ After this step the working pivot list always contains `bar.close` within its bo
 
 If **any** of the following are true, the analyst emits **no orders** and returns immediately:
 
-1. **Daily loss limit**: `status.position == "IDLE"` AND `available_cash < initial_cash * (1 - 0.03)` #at opening available_cash = initial_nav
+1. **Daily loss limit**: `status.position == "IDLE"` AND `available_cash < status.daily_start_nav * (1 - 0.03)`
    - `available_cash` = `bookkeeper.available_cash()`
+   - `status.daily_start_nav` = NAV at the start of the **current trading day**, reset by the coordinator on each day boundary. Ensures the 3% threshold is re-anchored to each day's opening cash, so a loss on day *d* does not permanently block trading on day *d+1*.
 2. **Post-hours idle**: `status.position == "IDLE"` AND `current_time_EST > STOP_TRADING_TIME` (default 15:30 EST)
 3. *(Further stop conditions to be added here as they are defined)*
 

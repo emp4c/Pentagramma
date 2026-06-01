@@ -213,7 +213,7 @@ def analyse(
     # -----------------------------------------------------------------------
     if status.position == "IDLE":
         available = bookkeeper.available_cash()
-        if available < status.initial_nav * (1 - DAILY_LOSS_LIMIT):
+        if available < status.daily_start_nav * (1 - DAILY_LOSS_LIMIT):
             return []
         if bar_time_est > STOP_TRADING_TIME:
             return []
@@ -244,7 +244,7 @@ def analyse(
         order_uuid = str(uuid.uuid4())
         orders.append(AnalystOrder(
             type="BUY_LIMIT",
-            price=pivots[i] * (1 - BUY_LIMIT_OFFSET),
+            price=min(pivots[i], bar.close) * (1 - BUY_LIMIT_OFFSET),
             size="FULL_AVAILABLE_CASH",
             condition=order_uuid,   # trader reads this as the intended BrokerOrder.order_id
         ))

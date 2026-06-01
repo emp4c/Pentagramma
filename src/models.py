@@ -40,6 +40,7 @@ class MachineStatus:
     position:          Literal["IDLE", "LONG"]
     active_stop_price: float | None      # current stop-loss price; None when IDLE or unknown
     initial_nav:       float             # NAV at session start (cash + value of shares)
+    daily_start_nav:   float             # NAV at start of current trading day; reset by coordinator on day boundary
     session_date:      date              # calendar date of the current session (EST)
     pending_orders:    Dict[str, Literal["BUY", "SELL"]]  # order_id → side; {} when no open orders
     bar_count:         int               # total bars processed this session (for pivot timing)

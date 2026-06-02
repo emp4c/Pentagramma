@@ -81,7 +81,8 @@ The architecture is a pipeline of stateless components communicating via explici
 - **Batch optimisation**: pivots can be pre-calculated for every 30-bar checkpoint and cached in `data/pivots_cache/` — batch runner injects the cached list rather than recomputing
 
 ### Analyst (`src/analyst/`)
-- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar], bookkeeper: Bookkeeper, recalc_hook: Callable[[], List[float]] | None = None) -> List[AnalystOrder]`
+- Stateless function: `analyse(bar: OHLCVBar, status: MachineStatus, pivots: List[float], recent_bars: List[OHLCVBar], bookkeeper: Bookkeeper, recalc_hook: Callable[[], List[float]] | None = None) -> tuple[List[AnalystOrder], List[float]]`
+- The second return value is the working pivot list (may include virtual extensions). Coordinators must persist it as `current_pivots`; it is reset at the next 30-bar checkpoint.
 - Contains all trading logic (see `analyst_logic.md`)
 - Returns a list of `AnalystOrder` instructions; never communicates directly with broker
 - **Entry + stop-loss flow**: on every IDLE bar where VWAP and close agree on the same pivot, the analyst emits a `BUY_LIMIT` paired with a `SELL_STOP` (stop-loss) in the same response. The stop-loss fires only after the buy fills (`condition="on_fill:<uuid>"`). The coordinator warehouses the stop-loss internally and sends it to the broker only after the BUY confirmation arrives, at which point it knows the exact fill quantity. Once LONG, the analyst recomputes `candidate_stop = midpoint(pivot[i-1], pivot[i])` where `i` is the pivot closest to `bar.close`, and emits `UPDATE_STOPLOSS` only if `candidate_stop > status.active_stop_price` — the ratchet rule ensures the stop only ever moves up.

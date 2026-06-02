@@ -118,8 +118,8 @@ class TradingSession:
         def recalc_hook() -> List[float]:
             return self._build_pivots_from_db()
 
-        # Step 6 — Run analyst
-        analyst_orders = analyse(
+        # Step 6 — Run analyst; persist returned pivots (may include virtual OOS extensions)
+        analyst_orders, returned_pivots = analyse(
             bar,
             self._status,
             self._current_pivots,
@@ -127,6 +127,8 @@ class TradingSession:
             self._bookkeeper,
             recalc_hook,
         )
+        if returned_pivots is not self._current_pivots:
+            self._current_pivots = returned_pivots
 
         # Step 7 — Translate analyst instructions to broker orders
         broker_orders = process(analyst_orders, self._status, self._bookkeeper, self._ticker)
@@ -150,6 +152,13 @@ class TradingSession:
                 if broker_order.side == "BUY":
                     self._pending_stop_losses.pop(broker_order.order_id, None)
             else:
+                # Before sending a market sell, cancel any pending stop-losses so
+                # they cannot fill after the position has been closed.
+                if broker_order.order_type == "MARKET" and broker_order.side == "SELL":
+                    for oid in [o for o, s in list(self._status.pending_orders.items()) if s == "SELL"]:
+                        self._bus.cancel_order(oid)
+                        del self._status.pending_orders[oid]
+
                 self._bus.send_order(broker_order)
                 self._status.pending_orders[broker_order.order_id] = broker_order.side
                 _logger.debug(

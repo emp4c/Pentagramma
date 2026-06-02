@@ -11,7 +11,9 @@ Responsibility:
     from that document is a bug.
 
 Public interface:
-    analyse(bar, status, pivots, recent_bars, bookkeeper) -> List[AnalystOrder]
+    analyse(bar, status, pivots, recent_bars, bookkeeper) -> tuple[List[AnalystOrder], List[float]]
+    The second return value is the working pivot list (possibly extended with virtual pivots).
+    Coordinators must persist it as current_pivots so extensions survive to the next bar.
 
 --- Order Attribution Convention (UUID linkage) ---
 The analyst generates a uuid4 for each BUY_LIMIT order and stores it in
@@ -181,7 +183,7 @@ def analyse(
     recent_bars: List[OHLCVBar],
     bookkeeper: Bookkeeper,
     recalc_hook: Callable[[], List[float]] | None = None,
-) -> List[AnalystOrder]:
+) -> tuple[List[AnalystOrder], List[float]]:
     """
     Evaluate the current bar against machine state and pivots; emit trading instructions.
 
@@ -189,20 +191,23 @@ def analyse(
         bar:         The latest closed 1-minute bar.
         status:      Current machine state (read-only within analyse — coordinator
                      updates active_stop_price when orders are routed).
-        pivots:      Current pivot list, sorted ascending. Immutable within the
-                     30-bar window in which it was computed.
+        pivots:      Current pivot list, sorted ascending. May be extended with
+                     virtual pivots if bar.close falls outside the current scope.
         recent_bars: The last VWAP_WINDOW_BARS bars (including `bar`), used to
                      compute the rolling VWAP in the IDLE branch.
         bookkeeper:  Access to current cash and shares held.
 
     Returns:
-        A (possibly empty) list of AnalystOrder objects, to be processed in order
-        by the Trader. An empty list means "do nothing this bar".
+        (orders, working_pivots) where orders is the (possibly empty) list of
+        AnalystOrder objects for the Trader, and working_pivots is the pivot list
+        actually used this bar (may be extended beyond the passed-in list).
+        Coordinators must store working_pivots as current_pivots so virtual
+        extensions survive to the next bar until the next 30-bar checkpoint reset.
     """
     if not pivots:
         # TODO: pivot list empty — issue warning (analyst_logic.md Unresolved section)
         _logger.warning("Pivot list is empty — analyst returning no orders")
-        return []
+        return [], []
 
     pivots = _resolve_pivots(bar.close, pivots, recalc_hook)
 
@@ -214,9 +219,9 @@ def analyse(
     if status.position == "IDLE":
         available = bookkeeper.available_cash()
         if available < status.daily_start_nav * (1 - DAILY_LOSS_LIMIT):
-            return []
+            return [], pivots
         if bar_time_est > STOP_TRADING_TIME:
-            return []
+            return [], pivots
 
     # -----------------------------------------------------------------------
     # IDLE branch
@@ -229,7 +234,7 @@ def analyse(
         _, close_idx = _closest_pivot(bar.close, pivots)
 
         if vwap_idx != close_idx:
-            return orders  # [CANCEL_ALL_BUYS] only
+            return orders, pivots  # [CANCEL_ALL_BUYS] only
 
         i = vwap_idx  # == close_idx; both agree on the same pivot
 
@@ -254,7 +259,7 @@ def analyse(
             size="ALL_SHARES",
             condition=f"on_fill:{order_uuid}",
         ))
-        return orders
+        return orders, pivots
 
     # -----------------------------------------------------------------------
     # LONG branch
@@ -265,8 +270,8 @@ def analyse(
     # with an UPDATE_STOPLOSS in the same bar.
     if bar_time_est > STOP_TRADING_TIME:
         if bookkeeper.shares_held() > 0:
-            return [AnalystOrder(type="SELL_MARKET", size="ALL_SHARES")]
-        return []
+            return [AnalystOrder(type="SELL_MARKET", size="ALL_SHARES")], pivots
+        return [], pivots
 
     orders = []
 
@@ -283,7 +288,7 @@ def analyse(
         _logger.warning(
             "Price %.4f at or below lowest pivot — cannot advance stop-loss", bar.close,
         )
-        return orders
+        return orders, pivots
 
     candidate = _stoploss_price(pivots, i)
     if status.active_stop_price is not None and candidate > status.active_stop_price:
@@ -292,4 +297,4 @@ def analyse(
             price=candidate,
         ))
 
-    return orders
+    return orders, pivots

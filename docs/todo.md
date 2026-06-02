@@ -145,12 +145,13 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 9 — Integration & Validation
 
-- [ ] Run batch on a real historical dataset (e.g. 1 Feb 2026 → 15 Mar 2026)
-- [ ] Inspect report output manually
-- [ ] Validate: no trades without a stop-loss
-- [ ] Validate: cash never goes below MIN_CASH_RESERVE
-- [ ] Validate: no duplicate ledger entries
-- [ ] Validate: pivot list always sorted, always within ±12% range
+- [x] Implement `dev_tools/validate.py` — automated validation script (6 checks, PASS/FAIL/WARN)
+- [x] Run batch on a real historical dataset (e.g. 1 Feb 2026 → 15 Mar 2026)
+- [x] Inspect report output manually
+- [x] Validate: no trades without a stop-loss
+- [x] Validate: cash never goes below MIN_CASH_RESERVE
+- [x] Validate: no duplicate ledger entries
+- [x] Validate: pivot list always sorted, always within ±12% range
 
 ---
 

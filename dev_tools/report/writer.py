@@ -103,14 +103,18 @@ def _bar_section(
 
     position = "IDLE"
     lines: List[str] = []
+    # pivot_log records every bar where the working pivot list changed (checkpoint reset
+    # or virtual OOS extension).  Walk it sequentially to avoid O(n²) key scans.
+    active_pivots: List[float] = pivot_snapshots.get(0, [])
 
     for t, bar in enumerate(bars):
         # Apply fills at this bar to track position at END of bar processing
         for conf in fills_at.get(t, []):
             position = "LONG" if conf.side == "BUY" else "IDLE"
 
-        checkpoint = (t // PIVOT_INTERVAL_BARS) * PIVOT_INTERVAL_BARS
-        active_pivots = pivot_snapshots.get(checkpoint, [])
+        # Update active pivots whenever the coordinator recorded a change at this bar
+        if t in result.pivot_log:
+            active_pivots = result.pivot_log[t]
 
         ts_est = _to_est(bar.timestamp).strftime("%Y-%m-%d %H:%M")
         ohlcv = (

@@ -114,16 +114,16 @@ def test_stop_daily_loss_returns_empty(pivots: list[float], idle_status: Machine
     threshold = idle_status.daily_start_nav * (1 - DAILY_LOSS_LIMIT)   # 9700.0
     low_cash = threshold + MIN_CASH_RESERVE - 1.0                   # available = threshold-1
     bk = Bookkeeper(initial_cash=low_cash)
-    result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
-    assert result == []
+    orders, _ = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
+    assert orders == []
 
 
 def test_stop_post_hours_idle_returns_empty(
     pivots: list[float], idle_status: MachineStatus, bk: Bookkeeper
 ) -> None:
     """Post-hours + IDLE → returns []."""
-    result = analyse(_bar(106.0, ts=_AFTER), idle_status, pivots, _recent_bars(106.0, ts=_AFTER), bk)
-    assert result == []
+    orders, _ = analyse(_bar(106.0, ts=_AFTER), idle_status, pivots, _recent_bars(106.0, ts=_AFTER), bk)
+    assert orders == []
 
 
 def test_stop_post_hours_long_falls_through(
@@ -132,8 +132,8 @@ def test_stop_post_hours_long_falls_through(
     """Post-hours + LONG → stop conditions are NOT applied; LONG branch runs instead."""
     _give_shares(bk)
     bar = _bar(112.0, ts=_AFTER)
-    result = analyse(bar, long_status, pivots, _recent_bars(112.0, ts=_AFTER), bk)
-    assert any(o.type == "SELL_MARKET" for o in result)
+    orders, _ = analyse(bar, long_status, pivots, _recent_bars(112.0, ts=_AFTER), bk)
+    assert any(o.type == "SELL_MARKET" for o in orders)
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +146,9 @@ def test_idle_pivot_mismatch_cancel_only(
     """pivot_vwap != pivot_close → returns [CANCEL_ALL_BUYS] only."""
     # VWAP ≈ 106 → closest pivot 105 (idx 1)
     # close = 112 → closest pivot 110 (idx 2)
-    result = analyse(_bar(112.0), idle_status, pivots, _recent_bars(106.0), bk)
-    assert len(result) == 1
-    assert result[0].type == "CANCEL_ALL_BUYS"
+    orders, _ = analyse(_bar(112.0), idle_status, pivots, _recent_bars(106.0), bk)
+    assert len(orders) == 1
+    assert orders[0].type == "CANCEL_ALL_BUYS"
 
 
 def test_idle_pivot_match_emits_entry_orders(
@@ -156,8 +156,8 @@ def test_idle_pivot_match_emits_entry_orders(
 ) -> None:
     """pivot_vwap == pivot_close, i > 0 → CANCEL_ALL_BUYS + BUY_LIMIT + SELL_STOP."""
     # Both VWAP and close ≈ 106 → closest pivot 105 (idx 1)
-    result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
-    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
+    orders, _ = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
+    assert [o.type for o in orders] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
 
 
 def test_idle_pivot_at_index_zero_uses_virtual_fallback(
@@ -172,10 +172,10 @@ def test_idle_pivot_at_index_zero_uses_virtual_fallback(
     BUY_LIMIT  : 100 * (1 - BUY_LIMIT_OFFSET) = 99.9
     SELL_LIMIT : (100 + 98.5) / 2 = 99.25
     """
-    result = analyse(_bar(100.0), idle_status, pivots, _recent_bars(100.0), bk)
-    assert [o.type for o in result] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
-    buy = next(o for o in result if o.type == "BUY_LIMIT")
-    sl  = next(o for o in result if o.type == "SELL_STOP")
+    orders, _ = analyse(_bar(100.0), idle_status, pivots, _recent_bars(100.0), bk)
+    assert [o.type for o in orders] == ["CANCEL_ALL_BUYS", "BUY_LIMIT", "SELL_STOP"]
+    buy = next(o for o in orders if o.type == "BUY_LIMIT")
+    sl  = next(o for o in orders if o.type == "SELL_STOP")
     assert buy.price == pytest.approx(100.0 * (1 - BUY_LIMIT_OFFSET))
     assert sl.price  == pytest.approx((100.0 + 100.0 * 0.985) / 2)   # 99.25
 
@@ -185,8 +185,8 @@ def test_idle_buy_limit_price(
 ) -> None:
     """Buy limit price == pivots[i] * (1 - BUY_LIMIT_OFFSET)."""
     i = 1   # closest pivot to 106.0 is pivots[1]=105.0
-    result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
-    buy = next(o for o in result if o.type == "BUY_LIMIT")
+    orders, _ = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
+    buy = next(o for o in orders if o.type == "BUY_LIMIT")
     assert buy.price == pytest.approx(pivots[i] * (1 - BUY_LIMIT_OFFSET))
 
 
@@ -195,9 +195,9 @@ def test_idle_stoploss_price(
 ) -> None:
     """Stop-loss price == (pivots[i] + pivots[i-1]) / 2; condition links to buy UUID."""
     i = 1   # pivots[1]=105, pivots[0]=100 → midpoint=102.5
-    result = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
-    buy = next(o for o in result if o.type == "BUY_LIMIT")
-    sl  = next(o for o in result if o.type == "SELL_STOP")
+    orders, _ = analyse(_bar(106.0), idle_status, pivots, _recent_bars(106.0), bk)
+    buy = next(o for o in orders if o.type == "BUY_LIMIT")
+    sl  = next(o for o in orders if o.type == "SELL_STOP")
     assert sl.price == pytest.approx(_stoploss_price(pivots, i))
     # UUID linkage: stop-loss condition must reference the buy order's UUID
     assert sl.condition == f"on_fill:{buy.condition}"
@@ -213,8 +213,8 @@ def test_long_no_advance_when_stop_current(
     """Close in same pivot band as current stop → candidate == active_stop_price → returns []."""
     # active_stop_price=107.5 = midpoint(105, 110).
     # close=109: closest pivot is 110 (idx 2), candidate=107.5 == active_stop_price → no update.
-    result = analyse(_bar(109.0), long_status, pivots, _recent_bars(109.0), bk)
-    assert result == []
+    orders, _ = analyse(_bar(109.0), long_status, pivots, _recent_bars(109.0), bk)
+    assert orders == []
 
 
 def test_long_stop_advances_when_band_shifts(
@@ -222,9 +222,9 @@ def test_long_stop_advances_when_band_shifts(
 ) -> None:
     """Close moves into higher pivot band → candidate > active_stop_price → UPDATE_STOPLOSS."""
     # active_stop_price=107.5; close=116: closest pivot is 115 (idx 3), candidate=112.5 > 107.5.
-    result = analyse(_bar(116.0), long_status, pivots, _recent_bars(116.0), bk)
-    assert any(o.type == "UPDATE_STOPLOSS" for o in result)
-    sl = next(o for o in result if o.type == "UPDATE_STOPLOSS")
+    orders, _ = analyse(_bar(116.0), long_status, pivots, _recent_bars(116.0), bk)
+    assert any(o.type == "UPDATE_STOPLOSS" for o in orders)
+    sl = next(o for o in orders if o.type == "UPDATE_STOPLOSS")
     assert sl.price == pytest.approx(_stoploss_price(pivots, 3))  # (115+110)/2 = 112.5
 
 
@@ -243,8 +243,8 @@ def test_long_no_advance_at_top_band(
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
-    result = analyse(_bar(120.5), status, pivots, _recent_bars(120.5), bk)
-    assert result == []
+    orders, _ = analyse(_bar(120.5), status, pivots, _recent_bars(120.5), bk)
+    assert orders == []
 
 
 # ---------------------------------------------------------------------------
@@ -257,16 +257,16 @@ def test_long_end_of_day_market_sell(
     """post stop_trading_time + shares_held > 0 → [SELL_MARKET] only."""
     _give_shares(bk)
     bar = _bar(113.0, ts=_AFTER)
-    result = analyse(bar, long_status, pivots, _recent_bars(113.0, ts=_AFTER), bk)
-    assert any(o.type == "SELL_MARKET" for o in result)
+    orders, _ = analyse(bar, long_status, pivots, _recent_bars(113.0, ts=_AFTER), bk)
+    assert any(o.type == "SELL_MARKET" for o in orders)
 
 
 def test_long_end_of_day_no_shares(
     pivots: list[float], long_status: MachineStatus, bk: Bookkeeper
 ) -> None:
     """post stop_trading_time + shares_held == 0 → returns []."""
-    result = analyse(_bar(113.0, ts=_AFTER), long_status, pivots, _recent_bars(113.0, ts=_AFTER), bk)
-    assert result == []
+    orders, _ = analyse(_bar(113.0, ts=_AFTER), long_status, pivots, _recent_bars(113.0, ts=_AFTER), bk)
+    assert orders == []
 
 
 def test_long_stop_condition_wins_over_stop_advance(
@@ -278,10 +278,10 @@ def test_long_stop_condition_wins_over_stop_advance(
     """
     _give_shares(bk)
     bar = _bar(116.0, ts=_AFTER)
-    result = analyse(bar, long_status, pivots, _recent_bars(116.0, ts=_AFTER), bk)
-    types = [o.type for o in result]
+    orders, _ = analyse(bar, long_status, pivots, _recent_bars(116.0, ts=_AFTER), bk)
+    types = [o.type for o in orders]
     assert types == ["SELL_MARKET"]
-    assert not any(o.type == "UPDATE_STOPLOSS" for o in result)
+    assert not any(o.type == "UPDATE_STOPLOSS" for o in orders)
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +304,8 @@ def test_long_reemits_stoploss_when_no_pending(
     )
     # close=113 → closest pivot: |113-110|=3, |113-115|=2 → idx 3 (pivots[3]=115)
     # re-emitted stop price = (115+110)/2 = 112.5
-    result = analyse(_bar(113.0), status, pivots, _recent_bars(113.0), bk)
-    sl_orders = [o for o in result if o.type == "SELL_STOP"]
+    orders, _ = analyse(_bar(113.0), status, pivots, _recent_bars(113.0), bk)
+    sl_orders = [o for o in orders if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
     assert sl_orders[0].price == pytest.approx(_stoploss_price(pivots, 3))
     assert sl_orders[0].size == "ALL_SHARES"
@@ -327,8 +327,8 @@ def test_long_reemit_stoploss_price_anchors_to_close(
     )
     # close=118 → closest pivot: |118-120|=2, |118-115|=3 → idx 4 (pivots[4]=120)
     # re-emitted stop = (120+115)/2 = 117.5
-    result = analyse(_bar(118.0), status, pivots, _recent_bars(118.0), bk)
-    sl_orders = [o for o in result if o.type == "SELL_STOP"]
+    orders, _ = analyse(_bar(118.0), status, pivots, _recent_bars(118.0), bk)
+    sl_orders = [o for o in orders if o.type == "SELL_STOP"]
     assert len(sl_orders) == 1
     assert sl_orders[0].price == pytest.approx(_stoploss_price(pivots, 4))
 
@@ -349,8 +349,8 @@ def test_long_reemit_stoploss_skips_at_index_zero(
     )
     # close=100 → closest pivot idx 0 → skip re-emission
     with caplog.at_level(logging.WARNING, logger="src.analyst.analyst"):
-        result = analyse(_bar(100.0), status, pivots, _recent_bars(100.0), bk)
-    assert not any(o.type == "SELL_STOP" for o in result)
+        orders, _ = analyse(_bar(100.0), status, pivots, _recent_bars(100.0), bk)
+    assert not any(o.type == "SELL_STOP" for o in orders)
     assert any("index 0" in r.message or "pivot below" in r.message for r in caplog.records)
 
 
@@ -372,8 +372,8 @@ def test_long_reemit_and_stop_advance_together(
         pending_orders={},
         bar_count=0,
     )
-    result = analyse(_bar(116.0), status, pivots, _recent_bars(116.0), bk)
-    types = [o.type for o in result]
+    orders, _ = analyse(_bar(116.0), status, pivots, _recent_bars(116.0), bk)
+    types = [o.type for o in orders]
     assert "SELL_STOP" in types
     assert "UPDATE_STOPLOSS" in types
 
@@ -445,8 +445,8 @@ def test_oos_above_long_stop_advances_through_virtual_pivot(
         pending_orders={"existing-stoploss": "SELL"},
         bar_count=0,
     )
-    result = analyse(_bar(122.0), status, pivots, _recent_bars(122.0), bk)
-    sl = next((o for o in result if o.type == "UPDATE_STOPLOSS"), None)
+    orders, _ = analyse(_bar(122.0), status, pivots, _recent_bars(122.0), bk)
+    sl = next((o for o in orders if o.type == "UPDATE_STOPLOSS"), None)
     assert sl is not None
     assert sl.price == pytest.approx((120.0 * 1.015 + 120.0) / 2)  # (121.8 + 120) / 2 = 120.9
 
@@ -460,8 +460,8 @@ def test_oos_idle_entry_orders_emitted_via_virtual_pivot(
     close=122, VWAP≈122 → both closest to virtual pivot 121.8 (idx 5) → entry orders.
     """
     pivots = [100.0, 105.0, 110.0, 115.0, 120.0]
-    result = analyse(_bar(122.0), idle_status, pivots, _recent_bars(122.0), bk)
-    types = [o.type for o in result]
+    orders, _ = analyse(_bar(122.0), idle_status, pivots, _recent_bars(122.0), bk)
+    types = [o.type for o in orders]
     assert "CANCEL_ALL_BUYS" in types
     assert "BUY_LIMIT" in types
     assert "SELL_STOP" in types
@@ -502,3 +502,34 @@ def test_oos_recalc_hook_still_oos_falls_back_to_extension(
         analyse(_bar(122.0), idle_status, pivots, _recent_bars(122.0), bk, recalc_hook=hook)
 
     assert any("extending pivot grid" in r.message for r in caplog.records)
+
+
+def test_oos_extension_returned_in_working_pivots(
+    idle_status: MachineStatus, bk: Bookkeeper,
+) -> None:
+    """
+    Virtual extension is returned as the working pivot list so coordinators can persist it.
+    close=122 is OOS above [100…120]; expect virtual pivot 120*1.015=121.8 appended.
+    """
+    pivots = [100.0, 105.0, 110.0, 115.0, 120.0]
+    _, returned_pivots = analyse(_bar(122.0), idle_status, pivots, _recent_bars(122.0), bk)
+    assert len(returned_pivots) == 6
+    assert returned_pivots[-1] == pytest.approx(120.0 * 1.015)
+    assert returned_pivots == sorted(returned_pivots)
+
+
+def test_oos_extension_persists_across_consecutive_bars(
+    idle_status: MachineStatus, bk: Bookkeeper,
+) -> None:
+    """
+    Coordinator persisting returned_pivots means the second bar uses the extended list.
+    Bar 1: close=122 → virtual pivot appended at 121.8; returned pivots have 6 elements.
+    Bar 2: close=121 is now within scope of the extended list → no further extension.
+    """
+    pivots = [100.0, 105.0, 110.0, 115.0, 120.0]
+    _, working_pivots = analyse(_bar(122.0), idle_status, pivots, _recent_bars(122.0), bk)
+    assert len(working_pivots) == 6  # extended
+
+    # Second bar uses the returned (extended) pivots — should not extend again
+    _, working_pivots2 = analyse(_bar(121.0), idle_status, working_pivots, _recent_bars(121.0), bk)
+    assert len(working_pivots2) == 6  # same list, no new extension needed

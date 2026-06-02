@@ -18,7 +18,9 @@ The analyst receives on every bar:
 
 ## Output
 
-A list of `AnalystOrder` objects. May be empty. Processed in order by the trader.
+A tuple `(List[AnalystOrder], List[float])`:
+- **orders** — the (possibly empty) list of `AnalystOrder` objects, processed in order by the trader.
+- **working_pivots** — the pivot list actually used this bar; may contain virtual extensions appended by the OOS handler. The coordinator must store this as `current_pivots` so extensions survive to the next bar. It is reset to the cached snapshot at the next 30-bar checkpoint.
 
 ---
 
@@ -64,7 +66,7 @@ j = max(1, round(log(bar.close / min_pivot) / log(0.985)))
 Prepend pivots for j = j_target … 1 (list stays sorted ascending).
 ```
 
-> The extended list is **ephemeral** — local to the current bar's analysis call. It is not written back to the session pivot cache or stored in `MachineStatus`.
+> The extended list is returned as the second element of `analyse()`'s return tuple. Coordinators (`batch_runner` / `stream_entry`) must store it as `current_pivots` so subsequent bars see the extended grid. It is **not** written back to the pivot cache or stored in `MachineStatus`. It is replaced by a fresh cache snapshot at the next 30-bar checkpoint.
 
 ### Effect on Downstream Logic
 

@@ -54,6 +54,7 @@ class RunResult:
     order_log:       List[tuple[int, BrokerOrder]]            = field(default_factory=list)
     execution_log:   List[tuple[int, ExecutionConfirmation]]  = field(default_factory=list)
     pivot_snapshots: Dict[int, List[float]]                   = field(default_factory=dict)
+    pivot_log:       Dict[int, List[float]]                   = field(default_factory=dict)
 
 
 def run_batch(
@@ -139,6 +140,7 @@ def run_batch(
 
     order_log:     list[tuple[int, BrokerOrder]]           = []
     execution_log: list[tuple[int, ExecutionConfirmation]] = []
+    pivot_log:     Dict[int, List[float]]                  = {}
 
     # ------------------------------------------------------------------
     # Step 4: Bar-by-bar simulation loop
@@ -148,6 +150,7 @@ def run_batch(
         # 4a: Inject pivot snapshot at each 30-bar checkpoint
         if t % PIVOT_INTERVAL_BARS == 0:
             current_pivots = pivot_cache_data.get(t, [])
+            pivot_log[t] = current_pivots  # record checkpoint reset
 
         # 4b: Collect recent bars for VWAP
         recent_bars = test_window[max(0, t - VWAP_WINDOW_BARS + 1): t + 1]
@@ -192,10 +195,13 @@ def run_batch(
             status.daily_start_nav = bookkeeper.available_cash()
             status.session_date = bar_date
 
-        # 4e: Run analyst
-        analyst_orders = analyse(
+        # 4e: Run analyst; persist returned pivots (may include virtual OOS extensions)
+        analyst_orders, returned_pivots = analyse(
             bar, status, current_pivots, recent_bars, bookkeeper, recalc_hook=None
         )
+        if returned_pivots is not current_pivots:
+            current_pivots = returned_pivots
+            pivot_log[t] = current_pivots  # overwrite checkpoint entry if both happened
 
         # Capture warehoused data from analyst orders before translation.
         # Conditional SELL_STOP: warehouse stop price — trader skips these, coordinator
@@ -222,6 +228,13 @@ def run_batch(
                     pending_stop_losses.pop(broker_order.order_id, None)
 
             else:
+                # Before sending a market sell, cancel any pending stop-losses so
+                # they cannot fill after the position has been closed.
+                if broker_order.order_type == "MARKET" and broker_order.side == "SELL":
+                    for oid in [o for o, s in list(status.pending_orders.items()) if s == "SELL"]:
+                        test_bus.cancel_order(oid)
+                        del status.pending_orders[oid]
+
                 test_bus.send_order(broker_order, current_bar_index=t)
                 status.pending_orders[broker_order.order_id] = broker_order.side
                 order_log.append((t, broker_order))
@@ -245,6 +258,7 @@ def run_batch(
         order_log=order_log,
         execution_log=execution_log,
         pivot_snapshots=pivot_cache_data,
+        pivot_log=pivot_log,
     )
 
     # ------------------------------------------------------------------

@@ -157,7 +157,7 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Deferred / Out of Scope for Now
 
-- [ ] Real broker API integration (`src/bus/live_bus.py`)
+- [x] Real broker API integration (`src/bus/live_bus.py`) — Alpaca (`alpaca-py`)
 - [ ] Additional stop conditions (see `analyst_logic.md`)
 - [ ] Re-entry logic after stop-loss hit same day
 - [ ] Partial fill handling

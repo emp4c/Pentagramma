@@ -132,10 +132,14 @@ Do not reorder items — dependencies flow top to bottom.
 
 ## Phase 8 — Streaming Entry Point
 
-- [ ] Implement `src/entry/stream_entry.py`
-  - [ ] `on_bar(bar: OHLCVBar) -> None` — main callback for live feed
-  - [ ] Calls scriber, manages pivot refresh counter, calls analyst → trader → live bus
-- [ ] Stub `src/bus/live_bus.py` (interface only — real broker API integration is out of scope for now)
+- [x] Implement `src/entry/stream_entry.py`
+  - [x] `TradingSession` class with `on_bar(bar: OHLCVBar) -> None` — main callback for live feed
+  - [x] Calls scriber, manages pivot refresh counter, calls analyst → trader → live bus
+  - [x] Recalc hook wired: on-demand pivot rebuild passed to analyst for OOS handling
+  - [x] Conditional stop-loss warehousing and BUY-fill activation (mirrors batch_runner logic)
+  - [x] Day-boundary reset of `daily_start_nav`
+- [x] Stub `src/bus/live_bus.py` (interface only — real broker API integration is out of scope for now)
+- [x] Smoke test `dev_tools/smoke_test.py`: 10 synthetic bars, TradingSession + TestBus, exits 0
 
 ---
 

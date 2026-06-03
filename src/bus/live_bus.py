@@ -138,6 +138,7 @@ class LiveBus:
         """Translate a BrokerOrder into an Alpaca request and submit it."""
         otype = order.order_type
         side = order.side
+        limit_price = round(order.limit_price, 2) if order.limit_price is not None else None
 
         if otype == "CANCEL":
             self.client.cancel_order_by_id(order.order_id)
@@ -148,7 +149,7 @@ class LiveBus:
                 symbol=order.ticker,
                 qty=order.quantity,
                 side=OrderSide.BUY,
-                limit_price=order.limit_price,
+                limit_price=limit_price,
                 time_in_force=TimeInForce.DAY,
             )
 
@@ -158,20 +159,20 @@ class LiveBus:
                 symbol=order.ticker,
                 qty=order.quantity,
                 side=OrderSide.SELL,
-                limit_price=order.limit_price,
+                limit_price=limit_price,
                 time_in_force=TimeInForce.GTC,
             )
 
         elif otype == "STOP_LIMIT" and side == "SELL":
             # stop_price sits 0.1 % above limit_price so the order triggers before
             # the limit is hit — prevents the limit from never being reached on a gap
-            stop_price = round(order.limit_price * 1.001, 4)
+            stop_price = round(limit_price * 1.001, 2)
             req = StopLimitOrderRequest(
                 symbol=order.ticker,
                 qty=order.quantity,
                 side=OrderSide.SELL,
                 stop_price=stop_price,
-                limit_price=order.limit_price,
+                limit_price=limit_price,
                 time_in_force=TimeInForce.GTC,
             )
 

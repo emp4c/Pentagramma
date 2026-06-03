@@ -32,7 +32,8 @@ def build_pivots(bars: List[OHLCVBar]) -> List[float]:
     if not bars or len(bars) < 20:
         return []
 
-    index = pd.DatetimeIndex([b.timestamp for b in bars])
+    timestamps = [b.timestamp.replace(tzinfo=None) for b in bars]
+    index = pd.DatetimeIndex(timestamps)
     df = pd.DataFrame(
         {
             "open":   [b.open   for b in bars],

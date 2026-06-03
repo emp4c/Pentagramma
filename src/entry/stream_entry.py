@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 from src.analyst.analyst import analyse
 from src.bookkeeper.bookkeeper import Bookkeeper
 from src.bus.protocol import BrokerBusProtocol
-from src.config import PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
+from src.config import DB_PATH, PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
 from src.models import BrokerOrder, MachineStatus, OHLCVBar
 from src.pivot.pivot_calc import build_pivots
 from src.scriber import db as _db
@@ -50,11 +50,13 @@ class TradingSession:
         ticker: str,
         initial_cash: float,
         bus: BrokerBusProtocol,
-        db_path: str = "data/bars.db",
+        db_path: str = DB_PATH,
+        push_confirmations: bool = False,
     ) -> None:
         self._ticker = ticker
         self._bus = bus
         self._db_path = db_path
+        self._push_confirmations = push_confirmations
 
         self._bookkeeper = Bookkeeper(initial_cash)
         self._status = MachineStatus(
@@ -68,6 +70,8 @@ class TradingSession:
         )
         # buy_order_id → stop-loss limit price; held until paired BUY fills
         self._pending_stop_losses: Dict[str, float] = {}
+        # internal UUID → broker-assigned UUID; built at send time
+        self._id_map: Dict[str, str] = {}
 
         # Seed pivot list from whatever history is already in the DB.
         self._current_pivots: List[float] = self._build_pivots_from_db()
@@ -147,10 +151,12 @@ class TradingSession:
         # Step 8 — Route broker orders to the bus
         for broker_order in broker_orders:
             if broker_order.order_type == "CANCEL":
-                self._bus.cancel_order(broker_order.order_id)
-                self._status.pending_orders.pop(broker_order.order_id, None)
+                broker_id = self._id_map.get(broker_order.order_id, broker_order.order_id)
+                self._bus.cancel_order(broker_id)
+                self._status.pending_orders.pop(broker_id, None)
                 if broker_order.side == "BUY":
                     self._pending_stop_losses.pop(broker_order.order_id, None)
+                    self._id_map.pop(broker_order.order_id, None)
             else:
                 # Before sending a market sell, cancel any pending stop-losses so
                 # they cannot fill after the position has been closed.
@@ -159,13 +165,15 @@ class TradingSession:
                         self._bus.cancel_order(oid)
                         del self._status.pending_orders[oid]
 
-                self._bus.send_order(broker_order)
-                self._status.pending_orders[broker_order.order_id] = broker_order.side
+                broker_id = self._bus.send_order(broker_order)
+                self._id_map[broker_order.order_id] = broker_id
+                self._status.pending_orders[broker_id] = broker_order.side
                 _logger.debug(
-                    "Order sent: %s %s order_id=%s limit=%.4f qty=%.4f",
+                    "Order sent: %s %s order_id=%s broker_id=%s limit=%.4f qty=%.4f",
                     broker_order.side,
                     broker_order.order_type,
                     broker_order.order_id,
+                    broker_id,
                     broker_order.limit_price or 0.0,
                     broker_order.quantity,
                 )
@@ -191,46 +199,72 @@ class TradingSession:
         """
         Poll the bus for fills on every pending order; update position and
         trigger conditional stop-loss activation on BUY fills.
+        Skipped when push_confirmations=True (AlpacaTradeUpdateStream drives delivery).
         """
+        if self._push_confirmations:
+            return
         for order_id in list(self._status.pending_orders):
             conf = self._bus.get_confirmation(order_id)
             if conf is None:
                 continue
+            self._handle_confirmation(order_id, conf)
 
-            self._bookkeeper.receive_confirmation(conf)
-            del self._status.pending_orders[order_id]
-            _logger.info(
-                "Confirmation: %s filled %.4f shares @ %.4f (order_id=%s)",
-                conf.side, conf.filled_quantity, conf.filled_price, order_id,
+    def notify_fill(self, conf: ExecutionConfirmation) -> None:
+        """
+        Called by AlpacaTradeUpdateStream when a fill arrives via push.
+        Only used when push_confirmations=True.
+        The order_id in conf is the broker-assigned UUID.
+        """
+        if conf.order_id not in self._status.pending_orders:
+            _logger.warning(
+                "notify_fill: unknown order_id %s — already processed or not sent by this session",
+                conf.order_id,
             )
+            return
+        self._handle_confirmation(conf.order_id, conf)
 
-            if conf.side == "BUY":
-                self._status.position = "LONG"
-                if order_id in self._pending_stop_losses:
-                    stop_price = self._pending_stop_losses.pop(order_id)
-                    self._status.active_stop_price = stop_price
-                    stop_order = BrokerOrder(
-                        order_id=str(uuid.uuid4()),
-                        ticker=self._ticker,
-                        side="SELL",
-                        order_type="STOP_LIMIT",
-                        limit_price=stop_price,
-                        quantity=conf.filled_quantity,
-                        condition=None,
-                        created_at=datetime.now(timezone.utc),
-                    )
-                    self._bus.send_order(stop_order)
-                    self._status.pending_orders[stop_order.order_id] = "SELL"
-                    _logger.info(
-                        "Stop-loss activated: price=%.4f qty=%.4f order_id=%s",
-                        stop_price, conf.filled_quantity, stop_order.order_id,
-                    )
-                else:
-                    self._status.active_stop_price = None
+    def _handle_confirmation(self, order_id: str, conf: ExecutionConfirmation) -> None:
+        """Process a single confirmed fill: update bookkeeper, position, and activate stop-loss."""
+        self._bookkeeper.receive_confirmation(conf)
+        del self._status.pending_orders[order_id]
+        # Reverse-lookup internal UUID before pruning (order_id is the broker UUID)
+        _reverse = {v: k for k, v in self._id_map.items()}
+        internal_id = _reverse.get(order_id, order_id)  # fallback: no-remap case (test/batch)
+        # Remove from id_map to prevent unbounded growth in long sessions
+        self._id_map = {k: v for k, v in self._id_map.items() if v != order_id}
+        _logger.info(
+            "Confirmation: %s filled %.4f shares @ %.4f (order_id=%s)",
+            conf.side, conf.filled_quantity, conf.filled_price, order_id,
+        )
 
-            elif conf.side == "SELL":
-                self._status.position = "IDLE"
+        if conf.side == "BUY":
+            self._status.position = "LONG"
+            if internal_id in self._pending_stop_losses:
+                stop_price = self._pending_stop_losses.pop(internal_id)
+                self._status.active_stop_price = stop_price
+                stop_order = BrokerOrder(
+                    order_id=str(uuid.uuid4()),
+                    ticker=self._ticker,
+                    side="SELL",
+                    order_type="STOP_LIMIT",
+                    limit_price=stop_price,
+                    quantity=conf.filled_quantity,
+                    condition=None,
+                    created_at=datetime.now(timezone.utc),
+                )
+                broker_id = self._bus.send_order(stop_order)
+                self._id_map[stop_order.order_id] = broker_id
+                self._status.pending_orders[broker_id] = "SELL"
+                _logger.info(
+                    "Stop-loss activated: price=%.4f qty=%.4f order_id=%s",
+                    stop_price, conf.filled_quantity, stop_order.order_id,
+                )
+            else:
                 self._status.active_stop_price = None
+
+        elif conf.side == "SELL":
+            self._status.position = "IDLE"
+            self._status.active_stop_price = None
 
     def _build_pivots_from_db(self) -> List[float]:
         """Fetch PIVOT_LOOKBACK_DAYS of history from DB and compute fresh pivots."""

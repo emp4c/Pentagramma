@@ -155,6 +155,18 @@ Do not reorder items — dependencies flow top to bottom.
 
 ---
 
+---
+
+## Phase B — Alpaca WebSocket Streams
+
+- [x] Implement `src/entry/alpaca_stream.py`: `AlpacaBarStream` — subscribes to 1-min bars, feeds `TradingSession.on_bar()`
+- [x] Implement `src/entry/alpaca_trade_updates.py`: `AlpacaTradeUpdateStream` — subscribes to fill events, updates bookkeeper + MachineStatus
+- [x] Implement `src/entry/main.py`: launches both streams as daemon threads, joins on both
+- [x] Verify `requirements.txt` already contains `alpaca-py` and `python-dotenv` (confirmed — no change needed)
+- [ ] Manual test during market hours: `python src/entry/main.py --ticker AAPL --cash 10000` — verify bars arrive each minute, no exceptions
+
+---
+
 ## Deferred / Out of Scope for Now
 
 - [x] Real broker API integration (`src/bus/live_bus.py`) — Alpaca (`alpaca-py`)

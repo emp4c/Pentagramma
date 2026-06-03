@@ -6,7 +6,7 @@ Usage:
         --ticker AAPL \\
         --start  2026-02-01 \\
         --end    2026-03-15 \\
-        --db     data/ohlcv.db \\
+        --db     <path to OHLCV DB; defaults to config.DB_PATH> \\
         --cash   10000
 """
 

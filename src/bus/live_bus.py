@@ -130,6 +130,22 @@ class LiveBus:
         """
         self._confirmation_handler = handler
 
+    def get_account_state(self, ticker: str) -> tuple[float, float]:
+        """
+        Return (cash, shares_held) from the Alpaca account.
+
+        cash   = account.cash (total settled cash)
+        shares = position.qty for the given ticker, or 0.0 if no position held.
+        """
+        account = _with_retry(self.client.get_account)
+        cash = float(account.cash)
+        try:
+            position = _with_retry(self.client.get_open_position, ticker)
+            shares = float(position.qty)
+        except Exception:
+            shares = 0.0
+        return cash, shares
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

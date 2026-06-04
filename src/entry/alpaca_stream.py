@@ -6,12 +6,13 @@ bar into the TradingSession pipeline via on_bar().
 
 Public interface:
     AlpacaBarStream(session, ticker) — construct once per session
-    AlpacaBarStream.run()            — blocks; runs the asyncio event loop internally
+    AlpacaBarStream.run()            — blocks; reconnects automatically on failure
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 from alpaca.data.live import StockDataStream
 from alpaca.data.models import Bar
@@ -49,5 +50,25 @@ class AlpacaBarStream:
         write_bar(ohlcv)
         self.session.on_bar(ohlcv)
 
+    def _rebuild_client(self) -> None:
+        self.wss_client = StockDataStream(ALPACA_API_KEY, ALPACA_API_SECRET)
+        self.wss_client.subscribe_bars(self._on_bar, self.ticker)
+
     def run(self) -> None:
-        self.wss_client.run()
+        backoff = 5
+        while True:
+            try:
+                _logger.info("%s: connecting...", self.__class__.__name__)
+                self.wss_client.run()
+                _logger.warning(
+                    "%s: stream ended — reconnecting in %ds",
+                    self.__class__.__name__, backoff,
+                )
+            except Exception as e:
+                _logger.error(
+                    "%s: error %s — reconnecting in %ds",
+                    self.__class__.__name__, e, backoff,
+                )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            self._rebuild_client()

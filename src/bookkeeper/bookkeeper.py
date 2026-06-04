@@ -108,3 +108,30 @@ class Bookkeeper:
     def get_ledger(self) -> List[LedgerEntry]:
         """Return a copy of the ledger (caller must not mutate it)."""
         return list(self._ledger)
+
+    def reconcile(self, broker_cash: float, broker_shares: float, ticker: str) -> None:
+        """
+        Compare bookkeeper state against broker-reported values.
+
+        Logs a WARNING and updates internal state for any field that differs by
+        more than 0.01. Does NOT create ledger entries — reconciliation
+        adjustments are audit events, not trades.
+        """
+        import logging
+        _log = logging.getLogger(__name__)
+
+        if abs(self._cash - broker_cash) > 0.01:
+            _log.warning(
+                "Reconciliation (%s): cash mismatch — bookkeeper=%.2f broker=%.2f; "
+                "updating to broker value",
+                ticker, self._cash, broker_cash,
+            )
+            self._cash = broker_cash
+
+        if abs(self._shares - broker_shares) > 0.01:
+            _log.warning(
+                "Reconciliation (%s): shares mismatch — bookkeeper=%.4f broker=%.4f; "
+                "updating to broker value",
+                ticker, self._shares, broker_shares,
+            )
+            self._shares = broker_shares

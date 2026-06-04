@@ -17,12 +17,28 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+import time
 
 from src.bus.live_bus import LiveBus
 from src.config_env import ALPACA_PAPER
 from src.entry.alpaca_stream import AlpacaBarStream
 from src.entry.alpaca_trade_updates import AlpacaTradeUpdateStream
 from src.entry.stream_entry import TradingSession
+
+
+def _reconciliation_loop(
+    bus: LiveBus,
+    session: TradingSession,
+    ticker: str,
+    interval_seconds: int = 300,
+) -> None:
+    while True:
+        time.sleep(interval_seconds)
+        try:
+            cash, shares = bus.get_account_state(ticker)
+            session.reconcile(cash, shares)
+        except Exception as e:
+            logging.error("Reconciliation failed: %s", e)
 
 
 def main(ticker: str, initial_cash: float) -> None:
@@ -42,10 +58,20 @@ def main(ticker: str, initial_cash: float) -> None:
 
     t1 = threading.Thread(target=bar_stream.run, daemon=True, name="bar-stream")
     t2 = threading.Thread(target=trade_updates.run, daemon=True, name="trade-updates")
+    t3 = threading.Thread(
+        target=_reconciliation_loop,
+        args=(bus, session, ticker),
+        daemon=True,
+        name="reconciliation",
+    )
     t1.start()
     t2.start()
-    t1.join()
-    t2.join()
+    t3.start()
+    try:
+        t1.join()
+        t2.join()
+    finally:
+        session.shutdown()
 
 
 if __name__ == "__main__":

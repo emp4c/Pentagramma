@@ -7,12 +7,13 @@ conditional stop-loss activation on BUY fills).
 
 Public interface:
     AlpacaTradeUpdateStream(session) — construct once per session
-    AlpacaTradeUpdateStream.run()    — blocks; runs its own event loop
+    AlpacaTradeUpdateStream.run()    — blocks; reconnects automatically on failure
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 from alpaca.trading.stream import TradingStream
 from alpaca.trading.models import TradeUpdate
@@ -35,11 +36,12 @@ class AlpacaTradeUpdateStream:
 
         if event in ("fill", "partial_fill"):
             order = update.order
+            side = "BUY" if order.side.value == "buy" else "SELL"
             conf = ExecutionConfirmation(
                 confirmation_id=str(order.id) + "_" + event,
                 order_id=str(order.id),
                 ticker=order.symbol,
-                side="BUY" if order.side.value == "buy" else "SELL",
+                side=side,
                 filled_quantity=float(order.filled_qty),
                 filled_price=float(order.filled_avg_price),
                 filled_at=order.filled_at,
@@ -49,10 +51,17 @@ class AlpacaTradeUpdateStream:
                 # Route through session so _handle_confirmation runs:
                 # bookkeeper update + position transition + stop-loss activation.
                 self.session.notify_fill(conf)
+            elif side == "BUY":
+                # partial_fill BUY: commit filled shares, cancel remainder, go LONG with stop.
+                self.session.handle_buy_partial_fill(conf)
             else:
-                # partial_fill: stage the cumulative fill so notify_cancel can commit
-                # it if the order is later canceled before a full fill arrives.
-                self.session.stage_partial_fill(conf)
+                # partial_fill SELL: machine stays LONG until the full fill arrives.
+                # The remainder continues as an open order at Alpaca — no state change needed.
+                _logger.info(
+                    "Trade update — partial_fill SELL: %.4f shares @ %.4f (order_id=%s) "
+                    "— remainder stays open, position remains LONG",
+                    conf.filled_quantity, conf.filled_price, conf.order_id,
+                )
 
         elif event in ("canceled", "rejected", "expired"):
             order_id = str(update.order.id)
@@ -61,5 +70,25 @@ class AlpacaTradeUpdateStream:
             # stop-loss emission) to notify_cancel so the logic stays in one place.
             self.session.notify_cancel(order_id)
 
+    def _rebuild_client(self) -> None:
+        self.stream = TradingStream(ALPACA_API_KEY, ALPACA_API_SECRET, paper=ALPACA_PAPER)
+        self.stream.subscribe_trade_updates(self._on_trade_update)
+
     def run(self) -> None:
-        self.stream.run()
+        backoff = 5
+        while True:
+            try:
+                _logger.info("%s: connecting...", self.__class__.__name__)
+                self.stream.run()
+                _logger.warning(
+                    "%s: stream ended — reconnecting in %ds",
+                    self.__class__.__name__, backoff,
+                )
+            except Exception as e:
+                _logger.error(
+                    "%s: error %s — reconnecting in %ds",
+                    self.__class__.__name__, e, backoff,
+                )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            self._rebuild_client()

@@ -26,7 +26,15 @@ from zoneinfo import ZoneInfo
 from src.analyst.analyst import analyse
 from src.bookkeeper.bookkeeper import Bookkeeper
 from src.bus.protocol import BrokerBusProtocol
-from src.config import DB_PATH, PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
+from src.config import (
+    DAILY_LOSS_LIMIT,
+    DB_PATH,
+    PIVOT_INTERVAL_BARS,
+    PIVOT_LOOKBACK_DAYS,
+    STOP_TRADING_TIME,
+    VWAP_WINDOW_BARS,
+)
+from src.logger.trading_logger import TradingLogger
 from src.models import BrokerOrder, ExecutionConfirmation, MachineStatus, OHLCVBar
 from src.pivot.pivot_calc import build_pivots
 from src.scriber import db as _db
@@ -78,6 +86,11 @@ class TradingSession:
         # dispatch time so notify_cancel can find it even after _id_map is cleaned up
         self._entry_stop_by_broker_id: Dict[str, float] = {}
 
+        self._tlog = TradingLogger(ticker=ticker, initial_cash=initial_cash)
+        # Flags to emit DAILY_LOSS_LIMIT_HIT / TIME_LIMIT_HIT only on first occurrence per day
+        self._daily_loss_logged: bool = False
+        self._time_limit_logged: bool = False
+
         # Seed pivot list from whatever history is already in the DB.
         self._current_pivots: List[float] = self._build_pivots_from_db()
         if not self._current_pivots:
@@ -101,6 +114,7 @@ class TradingSession:
 
         # Step 1 — Persist bar to the long-term DB
         write_bar(bar, db_path=self._db_path)
+        self._tlog.log_bar_received(bar, self._status, self._bookkeeper)
 
         # Step 2 — Increment bar counter
         self._status.bar_count += 1
@@ -113,6 +127,9 @@ class TradingSession:
                 _logger.info(
                     "Pivots rebuilt at bar %d for %s: %d levels",
                     self._status.bar_count, self._ticker, len(fresh),
+                )
+                self._tlog.log_pivots_recalculated(
+                    fresh, self._status.bar_count, self._status, self._bookkeeper
                 )
             else:
                 _logger.warning(
@@ -139,6 +156,50 @@ class TradingSession:
         if returned_pivots is not self._current_pivots:
             self._current_pivots = returned_pivots
 
+        # [Logging] Compute VWAP and closest-pivot indices for SIGNAL_EVALUATED record
+        _log_vwap, _log_vwap_idx, _log_close_idx = 0.0, -1, -1
+        if recent_bars and returned_pivots:
+            _tpvol = sum((b.high + b.low + b.close) / 3 * b.volume for b in recent_bars)
+            _tvol = sum(b.volume for b in recent_bars)
+            if _tvol > 0:
+                _log_vwap = _tpvol / _tvol
+                _log_vwap_idx = min(
+                    range(len(returned_pivots)),
+                    key=lambda i: abs(returned_pivots[i] - _log_vwap),
+                )
+                _log_close_idx = min(
+                    range(len(returned_pivots)),
+                    key=lambda i: abs(returned_pivots[i] - bar.close),
+                )
+        self._tlog.log_signal_evaluated(
+            bar, self._status, self._bookkeeper,
+            analyst_orders, returned_pivots,
+            _log_vwap, _log_vwap_idx, _log_close_idx,
+        )
+
+        # [Logging] First-occurrence detection for IDLE stop conditions
+        if self._status.position == "IDLE" and not analyst_orders:
+            _bar_time_est = bar.timestamp.astimezone(_EST).time()
+            try:
+                _avail = self._bookkeeper.available_cash()
+            except ValueError:
+                _avail = 0.0
+            if (
+                _avail < self._status.daily_start_nav * (1 - DAILY_LOSS_LIMIT)
+                and not self._daily_loss_logged
+            ):
+                self._tlog.log_daily_loss_limit_hit(
+                    _avail - self._status.daily_start_nav,
+                    self._status.daily_start_nav * DAILY_LOSS_LIMIT,
+                    self._status, self._bookkeeper,
+                )
+                self._daily_loss_logged = True
+            elif _bar_time_est > STOP_TRADING_TIME and not self._time_limit_logged:
+                self._tlog.log_time_limit_hit(
+                    _bar_time_est, STOP_TRADING_TIME, self._status, self._bookkeeper
+                )
+                self._time_limit_logged = True
+
         # Step 7 — Translate analyst instructions to broker orders
         broker_orders = process(analyst_orders, self._status, self._bookkeeper, self._ticker)
 
@@ -148,7 +209,11 @@ class TradingSession:
             if ao.type == "SELL_STOP" and ao.condition and ao.condition.startswith("on_fill:"):
                 self._pending_stop_losses[ao.condition[len("on_fill:"):]] = ao.price
             elif ao.type == "UPDATE_STOPLOSS":
+                _old_stop = self._status.active_stop_price
                 self._status.active_stop_price = ao.price
+                self._tlog.log_stop_updated(
+                    _old_stop, ao.price, "ratchet", self._status, self._bookkeeper
+                )
             elif ao.type == "SELL_STOP":
                 # Recovery stop-loss (non-conditional): active immediately
                 self._status.active_stop_price = ao.price
@@ -162,6 +227,10 @@ class TradingSession:
                 if broker_order.side == "BUY":
                     self._pending_stop_losses.pop(broker_order.order_id, None)
                     self._id_map.pop(broker_order.order_id, None)
+                    # SELL CANCEL is internal UPDATE_STOPLOSS mechanics; not logged separately
+                    self._tlog.log_order_cancelled(
+                        broker_id, "cancel_all_buys", self._status, self._bookkeeper
+                    )
             else:
                 # Before sending a market sell, cancel any pending stop-losses so
                 # they cannot fill after the position has been closed.
@@ -169,6 +238,9 @@ class TradingSession:
                     for oid in [o for o, s in list(self._status.pending_orders.items()) if s == "SELL"]:
                         self._bus.cancel_order(oid)
                         del self._status.pending_orders[oid]
+                        self._tlog.log_order_cancelled(
+                            oid, "superseded_by_market_sell", self._status, self._bookkeeper
+                        )
 
                 broker_id = self._bus.send_order(broker_order)
                 self._id_map[broker_order.order_id] = broker_id
@@ -189,6 +261,14 @@ class TradingSession:
                     broker_order.limit_price or 0.0,
                     broker_order.quantity,
                 )
+                if broker_order.order_type == "STOP_LIMIT":
+                    self._tlog.log_stop_submitted(
+                        broker_order, broker_id, self._status, self._bookkeeper
+                    )
+                else:
+                    self._tlog.log_order_submitted(
+                        broker_order, broker_id, self._status, self._bookkeeper
+                    )
 
         # Steps 9–11 — Poll all pending orders for fills; update status accordingly
         self._process_confirmations()
@@ -202,6 +282,9 @@ class TradingSession:
                 "New trading day %s: daily_start_nav reset to %.2f",
                 bar_date, self._status.daily_start_nav,
             )
+            self._daily_loss_logged = False
+            self._time_limit_logged = False
+            self._tlog.on_new_day()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -249,6 +332,7 @@ class TradingSession:
             "Trade update — partial_fill %s: %.4f shares @ %.4f (order_id=%s) — staged",
             conf.side, conf.filled_quantity, conf.filled_price, conf.order_id,
         )
+        self._tlog.log_partial_fill(conf, self._status, self._bookkeeper)
 
     def notify_cancel(self, broker_order_id: str) -> None:
         """
@@ -262,6 +346,9 @@ class TradingSession:
 
         If no partial fills were staged (order died before any fill), stays IDLE.
         """
+        self._tlog.log_order_cancelled(
+            broker_order_id, "broker_cancel", self._status, self._bookkeeper
+        )
         self._status.pending_orders.pop(broker_order_id, None)
         staged = self._partial_fill_staging.pop(broker_order_id, None)
         stop_price = self._entry_stop_by_broker_id.pop(broker_order_id, None)
@@ -303,6 +390,7 @@ class TradingSession:
         broker_id = self._bus.send_order(stop_order)
         self._id_map[stop_order.order_id] = broker_id
         self._status.pending_orders[broker_id] = "SELL"
+        self._tlog.log_stop_submitted(stop_order, broker_id, self._status, self._bookkeeper)
 
     def _handle_confirmation(self, order_id: str, conf: ExecutionConfirmation) -> None:
         """Process a single confirmed fill: update bookkeeper, position, and activate stop-loss."""
@@ -340,12 +428,103 @@ class TradingSession:
                     "Stop-loss activated: price=%.4f qty=%.4f order_id=%s",
                     stop_price, conf.filled_quantity, stop_order.order_id,
                 )
+                self._tlog.log_stop_submitted(stop_order, broker_id, self._status, self._bookkeeper)
             else:
                 self._status.active_stop_price = None
+            self._tlog.log_fill_received(conf, self._status, self._bookkeeper)
 
         elif conf.side == "SELL":
+            self._tlog.log_sell_filled(conf, self._status, self._bookkeeper)
             self._status.position = "IDLE"
             self._status.active_stop_price = None
+
+    def reconcile(self, broker_cash: float, broker_shares: float) -> None:
+        """Delegate periodic broker reconciliation to the bookkeeper."""
+        self._bookkeeper.reconcile(broker_cash, broker_shares, self._ticker)
+
+    def handle_buy_partial_fill(self, conf: ExecutionConfirmation) -> None:
+        """
+        Called by AlpacaTradeUpdateStream on a partial_fill event for a BUY order.
+
+        Commits the shares already acquired, cancels the unfilled remainder, transitions
+        to LONG, and emits a SELL_STOP sized to the actual filled quantity.
+
+        If the order is no longer in pending_orders (already handled), this is a no-op.
+        """
+        broker_order_id = conf.order_id
+
+        if broker_order_id not in self._status.pending_orders:
+            _logger.warning(
+                "handle_buy_partial_fill: order %s not in pending_orders — "
+                "already handled or unknown; ignoring",
+                broker_order_id,
+            )
+            return
+
+        _logger.info(
+            "BUY partial fill: %.4f shares @ %.4f (order_id=%s) — "
+            "committing and canceling unfilled remainder",
+            conf.filled_quantity, conf.filled_price, broker_order_id,
+        )
+        self._tlog.log_partial_fill(conf, self._status, self._bookkeeper)
+
+        # Commit acquired shares to the bookkeeper
+        self._bookkeeper.receive_confirmation(conf)
+
+        # Clear staging so the forthcoming cancel event via notify_cancel is a no-op
+        self._partial_fill_staging.pop(broker_order_id, None)
+
+        # Remove BUY from pending_orders now (cancel event will find nothing to clean up)
+        self._status.pending_orders.pop(broker_order_id, None)
+
+        # Cancel the unfilled remainder; Alpaca will push a "canceled" event which
+        # notify_cancel handles safely (staging cleared above → early return)
+        self._bus.cancel_order(broker_order_id)
+
+        # Retrieve entry-band stop price mirrored at dispatch time
+        stop_price = self._entry_stop_by_broker_id.pop(broker_order_id, None)
+
+        # Clean up internal ID mapping
+        _reverse = {v: k for k, v in self._id_map.items()}
+        internal_id = _reverse.get(broker_order_id, broker_order_id)
+        self._pending_stop_losses.pop(internal_id, None)
+        self._id_map = {k: v for k, v in self._id_map.items() if v != broker_order_id}
+
+        self._status.position = "LONG"
+
+        if stop_price is None:
+            _logger.warning(
+                "handle_buy_partial_fill: no entry stop price for order_id=%s — "
+                "position unprotected",
+                broker_order_id,
+            )
+            self._status.active_stop_price = None
+            return
+
+        self._status.active_stop_price = stop_price
+        stop_order = BrokerOrder(
+            order_id=str(uuid.uuid4()),
+            ticker=self._ticker,
+            side="SELL",
+            order_type="STOP_LIMIT",
+            limit_price=stop_price,
+            quantity=conf.filled_quantity,
+            condition=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        broker_id = self._bus.send_order(stop_order)
+        self._id_map[stop_order.order_id] = broker_id
+        self._status.pending_orders[broker_id] = "SELL"
+        _logger.info(
+            "Stop-loss activated (partial fill): price=%.4f qty=%.4f broker_id=%s",
+            stop_price, conf.filled_quantity, broker_id,
+        )
+        self._tlog.log_stop_submitted(stop_order, broker_id, self._status, self._bookkeeper)
+
+    def shutdown(self) -> None:
+        """Flush final daily summary and close logger resources. Call on graceful exit."""
+        self._tlog.log_daily_summary("session_end", self._status, self._bookkeeper)
+        self._tlog.close()
 
     def _build_pivots_from_db(self) -> List[float]:
         """Fetch PIVOT_LOOKBACK_DAYS of history from DB and compute fresh pivots."""

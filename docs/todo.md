@@ -167,11 +167,28 @@ Do not reorder items — dependencies flow top to bottom.
 
 ---
 
+---
+
+## Phase C — Resilience
+
+- [x] **Part 1 — Auto-reconnect**: `AlpacaBarStream.run()` and `AlpacaTradeUpdateStream.run()` wrapped in reconnect loop with exponential backoff (5 s → 60 s cap); `_rebuild_client()` re-instantiates the SDK client and re-subscribes after each disconnect
+- [x] **Part 2 — Bookkeeper reconciliation**:
+  - `Bookkeeper.reconcile(broker_cash, broker_shares, ticker)` — logs WARNING + corrects values if diff > 0.01; no ledger entries
+  - `LiveBus.get_account_state(ticker) -> (cash, shares)` — fetches account + open position from Alpaca REST
+  - `TradingSession.reconcile(cash, shares)` — thin delegate to bookkeeper
+  - `_reconciliation_loop` daemon thread in `main.py` calls reconcile every 5 minutes
+- [x] **Part 3 — Partial fill handling**:
+  - BUY partial fill: `TradingSession.handle_buy_partial_fill(conf)` commits shares, cancels remainder, transitions to LONG, emits SELL_STOP sized to actual fills
+  - SELL partial fill: logged only; machine stays LONG; final `fill` event closes position
+  - `AlpacaTradeUpdateStream._on_trade_update` dispatches BUY/SELL partial fills separately
+- [x] **Part 4 — Reconciliation tests**: `tests/test_reconciliation.py` — 11 tests covering no-discrepancy, cash mismatch, shares mismatch, both mismatched, and tolerance boundary; 120/120 suite passing
+
+---
+
 ## Deferred / Out of Scope for Now
 
 - [x] Real broker API integration (`src/bus/live_bus.py`) — Alpaca (`alpaca-py`)
 - [ ] Additional stop conditions (see `analyst_logic.md`)
 - [ ] Re-entry logic after stop-loss hit same day
-- [ ] Partial fill handling
 - [ ] Multi-ticker support
 - [ ] Virtual pivot fallback for entry at index 0 (it does not handle the case where the pivots jumps below by more than 1.5%)

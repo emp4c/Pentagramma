@@ -166,7 +166,7 @@ class LiveBus:
         elif otype == "STOP_LIMIT" and side == "SELL":
             # stop_price sits 0.1 % above limit_price so the order triggers before
             # the limit is hit — prevents the limit from never being reached on a gap
-            stop_price = round(limit_price * 1.001, 2)
+            stop_price = round(limit_price * 1.002, 2)
             req = StopLimitOrderRequest(
                 symbol=order.ticker,
                 qty=order.quantity,

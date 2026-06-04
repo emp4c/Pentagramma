@@ -64,6 +64,9 @@ The architecture is a pipeline of stateless components communicating via explici
 ### Entry Interface (`src/entry/`)
 - **stream_entry.py**: called by the live data feed; receives one `OHLCVBar`, triggers the pipeline
 - Maintains a bar counter to know when to call the pivot builder (every 30 bars)
+- **Partial-fill staging**: on each `partial_fill` WebSocket event for a BUY order, the coordinator stores the latest cumulative `ExecutionConfirmation` in `_partial_fill_staging` (keyed by Alpaca broker UUID). Alpaca reports `filled_qty` as a running cumulative total, so each new event simply overwrites the previous entry — no delta arithmetic needed.
+- **Entry stop price mirror**: at the moment a BUY order is dispatched to the broker, the coordinator copies the entry-band stop price (already warehoused in `_pending_stop_losses`) into a parallel dict `_entry_stop_by_broker_id` keyed by the Alpaca broker UUID. This survives the coordinator's own cleanup of `_pending_stop_losses` and `_id_map` and is the authoritative source for `notify_cancel`.
+- **Commit-on-cancel**: when a `canceled` (or `rejected`/`expired`) event arrives for a BUY order that has staged partial fills, the coordinator (via `notify_cancel`): commits the staged shares to the bookkeeper, transitions position to LONG, sets `active_stop_price` to the entry-band midpoint stored at dispatch time, and emits a `SELL_STOP` to the broker for the actual shares acquired. If no partial fills were staged the coordinator stays IDLE. The entry-band stop price (not the current bar's pivot band) is used so the ratchet logic in subsequent LONG bars can naturally advance it upward from there.
 
 ### Batch Runner (`dev_tools/batch_runner/`)
 - **Not production code**

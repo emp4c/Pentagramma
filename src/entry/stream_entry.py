@@ -27,7 +27,7 @@ from src.analyst.analyst import analyse
 from src.bookkeeper.bookkeeper import Bookkeeper
 from src.bus.protocol import BrokerBusProtocol
 from src.config import DB_PATH, PIVOT_INTERVAL_BARS, PIVOT_LOOKBACK_DAYS, VWAP_WINDOW_BARS
-from src.models import BrokerOrder, MachineStatus, OHLCVBar
+from src.models import BrokerOrder, ExecutionConfirmation, MachineStatus, OHLCVBar
 from src.pivot.pivot_calc import build_pivots
 from src.scriber import db as _db
 from src.scriber.scriber import write_bar
@@ -72,6 +72,11 @@ class TradingSession:
         self._pending_stop_losses: Dict[str, float] = {}
         # internal UUID → broker-assigned UUID; built at send time
         self._id_map: Dict[str, str] = {}
+        # broker_order_id → latest cumulative partial-fill conf; overwritten on each event
+        self._partial_fill_staging: Dict[str, ExecutionConfirmation] = {}
+        # broker_order_id → entry-band stop price; mirrored from _pending_stop_losses at
+        # dispatch time so notify_cancel can find it even after _id_map is cleaned up
+        self._entry_stop_by_broker_id: Dict[str, float] = {}
 
         # Seed pivot list from whatever history is already in the DB.
         self._current_pivots: List[float] = self._build_pivots_from_db()
@@ -168,6 +173,13 @@ class TradingSession:
                 broker_id = self._bus.send_order(broker_order)
                 self._id_map[broker_order.order_id] = broker_id
                 self._status.pending_orders[broker_id] = broker_order.side
+                # Mirror entry stop price keyed by broker UUID so notify_cancel
+                # can retrieve it even after _id_map has been cleaned up.
+                if (broker_order.side == "BUY"
+                        and broker_order.order_id in self._pending_stop_losses):
+                    self._entry_stop_by_broker_id[broker_id] = (
+                        self._pending_stop_losses[broker_order.order_id]
+                    )
                 _logger.debug(
                     "Order sent: %s %s order_id=%s broker_id=%s limit=%.4f qty=%.4f",
                     broker_order.side,
@@ -211,7 +223,7 @@ class TradingSession:
 
     def notify_fill(self, conf: ExecutionConfirmation) -> None:
         """
-        Called by AlpacaTradeUpdateStream when a fill arrives via push.
+        Called by AlpacaTradeUpdateStream when a full fill arrives via push.
         Only used when push_confirmations=True.
         The order_id in conf is the broker-assigned UUID.
         """
@@ -221,7 +233,76 @@ class TradingSession:
                 conf.order_id,
             )
             return
+        # A full fill supersedes any staged partial fills; clear both staging dicts.
+        self._partial_fill_staging.pop(conf.order_id, None)
+        self._entry_stop_by_broker_id.pop(conf.order_id, None)
         self._handle_confirmation(conf.order_id, conf)
+
+    def stage_partial_fill(self, conf: ExecutionConfirmation) -> None:
+        """
+        Called by AlpacaTradeUpdateStream on each partial_fill event.
+        Overwrites any previous staging for the same order_id; Alpaca reports
+        filled_qty as a cumulative total, so the latest event is always correct.
+        """
+        self._partial_fill_staging[conf.order_id] = conf
+        _logger.info(
+            "Trade update — partial_fill %s: %.4f shares @ %.4f (order_id=%s) — staged",
+            conf.side, conf.filled_quantity, conf.filled_price, conf.order_id,
+        )
+
+    def notify_cancel(self, broker_order_id: str) -> None:
+        """
+        Called by AlpacaTradeUpdateStream when a canceled/rejected/expired event arrives.
+
+        If the canceled order was a BUY with staged partial fills:
+          - Commits the acquired shares to the bookkeeper.
+          - Transitions position to LONG.
+          - Sets active_stop_price to the entry-band midpoint stored at dispatch time.
+          - Emits a SELL_STOP to the broker for the actual shares acquired.
+
+        If no partial fills were staged (order died before any fill), stays IDLE.
+        """
+        self._status.pending_orders.pop(broker_order_id, None)
+        staged = self._partial_fill_staging.pop(broker_order_id, None)
+        stop_price = self._entry_stop_by_broker_id.pop(broker_order_id, None)
+
+        if staged is None or staged.side != "BUY" or staged.filled_quantity == 0.0:
+            return
+
+        # Shares were acquired before the cancel — commit and protect with a stop-loss.
+        self._bookkeeper.receive_confirmation(staged)
+        self._status.position = "LONG"
+        cash_spent = staged.filled_quantity * staged.filled_price
+        _logger.info(
+            "Canceled BUY with partial fills committed: order_id=%s shares=%.4f "
+            "cash_spent=%.2f stop_price=%s",
+            broker_order_id, staged.filled_quantity, cash_spent,
+            f"{stop_price:.4f}" if stop_price is not None else "None",
+        )
+
+        if stop_price is None:
+            _logger.warning(
+                "notify_cancel: no entry stop price found for order_id=%s — "
+                "stop-loss not issued; position is unprotected",
+                broker_order_id,
+            )
+            self._status.active_stop_price = None
+            return
+
+        self._status.active_stop_price = stop_price
+        stop_order = BrokerOrder(
+            order_id=str(uuid.uuid4()),
+            ticker=self._ticker,
+            side="SELL",
+            order_type="STOP_LIMIT",
+            limit_price=stop_price,
+            quantity=staged.filled_quantity,
+            condition=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        broker_id = self._bus.send_order(stop_order)
+        self._id_map[stop_order.order_id] = broker_id
+        self._status.pending_orders[broker_id] = "SELL"
 
     def _handle_confirmation(self, order_id: str, conf: ExecutionConfirmation) -> None:
         """Process a single confirmed fill: update bookkeeper, position, and activate stop-loss."""

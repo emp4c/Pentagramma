@@ -18,7 +18,6 @@ import argparse
 import logging
 import threading
 
-from src.bookkeeper.bookkeeper import Bookkeeper
 from src.bus.live_bus import LiveBus
 from src.config_env import ALPACA_PAPER
 from src.entry.alpaca_stream import AlpacaBarStream
@@ -36,11 +35,10 @@ def main(ticker: str, initial_cash: float) -> None:
     logging.info("Starting algo trader — %s — %s mode", ticker, mode)
 
     bus = LiveBus()
-    bookkeeper = Bookkeeper(initial_cash)
     session = TradingSession(ticker=ticker, initial_cash=initial_cash, bus=bus)
 
     bar_stream = AlpacaBarStream(session, ticker)
-    trade_updates = AlpacaTradeUpdateStream(bookkeeper, session._status)
+    trade_updates = AlpacaTradeUpdateStream(session)
 
     t1 = threading.Thread(target=bar_stream.run, daemon=True, name="bar-stream")
     t2 = threading.Thread(target=trade_updates.run, daemon=True, name="trade-updates")

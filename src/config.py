@@ -17,7 +17,7 @@ DB_PATH: str = "data/ohlcv.db"
 # Trading session boundaries
 # ---------------------------------------------------------------------------
 
-STOP_TRADING_TIME: time = time(15, 30)
+STOP_TRADING_TIME: time = time(16, 30)
 # No new orders (and no new IDLE entries) after this time (Eastern Time / EST).
 # Post-hours: if IDLE, analyst returns nothing. If LONG, a market-sell is issued.
 

@@ -200,6 +200,10 @@ This convention is the only mechanism linking a stop-loss to its paired buy orde
 ## Unresolved / To Be Defined
 
 - [ ] Re-entry logic after a stop-loss is hit within the same day: when the stop-loss confirmation is received, the bookkeeper should reconfirm the cash available with the broker, update the machine status to idle and then proceed with the normal entry logic 
-- [ ] Handling of partial fills of BUY_LIMIT orders from the broker: cancel the unfilled part of the order and adjust the position size of the stop loss accordingly 
+- [x] Handling of partial fills of BUY_LIMIT orders from the broker — **implemented in coordinator (`stream_entry.py`)**:
+  - `partial_fill` events stage the latest cumulative fill in `_partial_fill_staging` (no bookkeeper update yet).
+  - If the BUY order is later **canceled** (broker-side or via `CANCEL_ALL_BUYS`): the coordinator commits the staged shares to the bookkeeper, transitions to LONG, and emits a `SELL_STOP` at the **entry-band midpoint** (`(pivot[i] + pivot[i-1]) / 2` from when the BUY was originally placed). The unfilled remainder is already gone — the broker cancel handles that.
+  - If the BUY order receives a full **fill**: the staged partial-fill entry is discarded and the normal fill path runs unchanged.
+  - The entry-band stop price is mirrored into `_entry_stop_by_broker_id` at dispatch time so it is available even after `_pending_stop_losses` and `_id_map` have been cleaned up.
 - [ ] Handling of partial fills of SELL_LIMIT orders from the broker: keep the unfilled part as a SELL order and keep the machine status LONG untill the entire position has been sold - in the meantime the same LONG logic is applied  
 - [ ] What happens if pivot list is empty (no pivots within ±12% range)- issue a warning

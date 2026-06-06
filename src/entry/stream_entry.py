@@ -29,6 +29,7 @@ from src.bus.protocol import BrokerBusProtocol
 from src.config import (
     DAILY_LOSS_LIMIT,
     DB_PATH,
+    ENTRY_STOP_FLOOR_PCT,
     PIVOT_INTERVAL_BARS,
     PIVOT_LOOKBACK_DAYS,
     STOP_TRADING_TIME,
@@ -264,7 +265,7 @@ class TradingSession:
                     broker_order.limit_price or 0.0,
                     broker_order.quantity,
                 )
-                if broker_order.order_type == "STOP_LIMIT":
+                if broker_order.order_type == "STOP":
                     self._tlog.log_stop_submitted(
                         broker_order, broker_id, self._status, self._bookkeeper
                     )
@@ -329,8 +330,17 @@ class TradingSession:
         Called by AlpacaTradeUpdateStream on each partial_fill event.
         Overwrites any previous staging for the same order_id; Alpaca reports
         filled_qty as a cumulative total, so the latest event is always correct.
+
+        Also applies the entry stop floor to _entry_stop_by_broker_id so that
+        notify_cancel always dispatches the floored stop price, not the raw
+        pivot-midpoint.
         """
         self._partial_fill_staging[conf.order_id] = conf
+        # Re-compute effective stop using the latest cumulative fill price.
+        current_stop = self._entry_stop_by_broker_id.get(conf.order_id)
+        if current_stop is not None:
+            floor_stop = conf.filled_price * (1 - ENTRY_STOP_FLOOR_PCT)
+            self._entry_stop_by_broker_id[conf.order_id] = min(current_stop, floor_stop)
         _logger.info(
             "Trade update — partial_fill %s: %.4f shares @ %.4f (order_id=%s) — staged",
             conf.side, conf.filled_quantity, conf.filled_price, conf.order_id,
@@ -384,11 +394,12 @@ class TradingSession:
             order_id=str(uuid.uuid4()),
             ticker=self._ticker,
             side="SELL",
-            order_type="STOP_LIMIT",
-            limit_price=stop_price,
+            order_type="STOP",
+            limit_price=None,
             quantity=staged.filled_quantity,
             condition=None,
             created_at=datetime.now(timezone.utc),
+            stop_price=stop_price,
         )
         broker_id = self._bus.send_order(stop_order)
         self._id_map[stop_order.order_id] = broker_id
@@ -412,24 +423,28 @@ class TradingSession:
         if conf.side == "BUY":
             self._status.position = "LONG"
             if internal_id in self._pending_stop_losses:
-                stop_price = self._pending_stop_losses.pop(internal_id)
-                self._status.active_stop_price = stop_price
+                analyst_stop = self._pending_stop_losses.pop(internal_id)
+                effective_stop = min(analyst_stop, conf.filled_price * (1 - ENTRY_STOP_FLOOR_PCT))
+                self._status.active_stop_price = effective_stop
                 stop_order = BrokerOrder(
                     order_id=str(uuid.uuid4()),
                     ticker=self._ticker,
                     side="SELL",
-                    order_type="STOP_LIMIT",
-                    limit_price=stop_price,
+                    order_type="STOP",
+                    limit_price=None,
                     quantity=conf.filled_quantity,
                     condition=None,
                     created_at=datetime.now(timezone.utc),
+                    stop_price=effective_stop,
                 )
                 broker_id = self._bus.send_order(stop_order)
                 self._id_map[stop_order.order_id] = broker_id
                 self._status.pending_orders[broker_id] = "SELL"
                 _logger.info(
-                    "Stop-loss activated: price=%.4f qty=%.4f order_id=%s",
-                    stop_price, conf.filled_quantity, stop_order.order_id,
+                    "Stop-loss activated: analyst_stop=%.4f effective_stop=%.4f "
+                    "fill=%.4f qty=%.4f order_id=%s",
+                    analyst_stop, effective_stop, conf.filled_price,
+                    conf.filled_quantity, stop_order.order_id,
                 )
                 self._tlog.log_stop_submitted(stop_order, broker_id, self._status, self._bookkeeper)
             else:
@@ -509,11 +524,12 @@ class TradingSession:
             order_id=str(uuid.uuid4()),
             ticker=self._ticker,
             side="SELL",
-            order_type="STOP_LIMIT",
-            limit_price=stop_price,
+            order_type="STOP",
+            limit_price=None,
             quantity=conf.filled_quantity,
             condition=None,
             created_at=datetime.now(timezone.utc),
+            stop_price=stop_price,
         )
         broker_id = self._bus.send_order(stop_order)
         self._id_map[stop_order.order_id] = broker_id

@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src.bookkeeper.bookkeeper import Bookkeeper
-from src.config import DAILY_LOSS_LIMIT, MIN_CASH_RESERVE, STOP_TRADING_TIME
+from src.config import DAILY_LOSS_LIMIT, ENTRY_STOP_FLOOR_PCT, MIN_CASH_RESERVE, STOP_TRADING_TIME
 from src.models import AnalystOrder, BrokerOrder, ExecutionConfirmation, MachineStatus, OHLCVBar
 
 _LOG = logging.getLogger(__name__)
@@ -520,15 +520,9 @@ class TradingLogger:
         self._order_meta[broker_id] = {
             "order_type": stop_order.order_type,
             "side": stop_order.side,
-            "limit_price": stop_order.limit_price,
+            "stop_price": stop_order.stop_price,
             "qty": stop_order.quantity,
         }
-        # Alpaca stop_price sits slightly above limit_price (mirroring live_bus behaviour)
-        stop_price = (
-            round(stop_order.limit_price * 1.002, 4)
-            if stop_order.limit_price is not None
-            else None
-        )
         self._write_jsonl({
             "timestamp": self._ts(),
             "event_type": "STOP_SUBMITTED",
@@ -537,8 +531,8 @@ class TradingLogger:
             "side": stop_order.side,
             "qty": stop_order.quantity,
             "order_type": stop_order.order_type,
-            "limit_price": stop_order.limit_price,
-            "stop_price": stop_price,
+            "stop_price": stop_order.stop_price,
+            "entry_stop_floor_pct": ENTRY_STOP_FLOOR_PCT,
             "portfolio_snapshot": self._portfolio_snapshot(bookkeeper),
         })
         self._db_write(
@@ -548,7 +542,7 @@ class TradingLogger:
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 broker_id, self._ticker, stop_order.side, stop_order.quantity,
-                stop_order.order_type, stop_order.limit_price, stop_price,
+                stop_order.order_type, None, stop_order.stop_price,
                 self._ts(), "submitted",
             ),
         )
@@ -580,7 +574,7 @@ class TradingLogger:
         """Called when a SELL order (stop-loss or market) is fully filled."""
         meta = self._order_meta.pop(conf.order_id, {})
         exit_reason = (
-            "stop_limit_hit" if meta.get("order_type") == "STOP_LIMIT" else "time_limit"
+            "stop_hit" if meta.get("order_type") == "STOP" else "time_limit"
         )
         gross_pnl = (
             (conf.filled_price - self._entry_price) * conf.filled_quantity

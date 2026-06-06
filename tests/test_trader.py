@@ -251,7 +251,7 @@ def test_cancel_all_buys_empty_pending_produces_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 def test_update_stoploss_cancels_old_and_creates_new() -> None:
-    """Existing SELL in pending_orders → CANCEL the old + fresh STOP_LIMIT at new price."""
+    """Existing SELL in pending_orders → CANCEL the old + fresh STOP at new price."""
     bk = _bk_with_shares(qty=10.0, price=100.0)
     status = _make_status("LONG", active_stop_price=107.5,
                           pending_orders={"stoploss-id": "SELL"})
@@ -262,18 +262,19 @@ def test_update_stoploss_cancels_old_and_creates_new() -> None:
         "TEST",
     )
     cancel_orders = [o for o in result if o.order_type == "CANCEL"]
-    new_orders = [o for o in result if o.order_type == "STOP_LIMIT"]
+    new_orders = [o for o in result if o.order_type == "STOP"]
     assert len(cancel_orders) == 1
     assert cancel_orders[0].order_id == "stoploss-id"
     assert cancel_orders[0].side == "SELL"
     assert len(new_orders) == 1
     assert new_orders[0].side == "SELL"
-    assert new_orders[0].limit_price == 105.0
+    assert new_orders[0].stop_price == 105.0
+    assert new_orders[0].limit_price is None
     assert new_orders[0].quantity == 10.0
 
 
 def test_update_stoploss_no_existing_creates_fresh(caplog: pytest.LogCaptureFixture) -> None:
-    """No SELL in pending_orders → warning logged, fresh STOP_LIMIT created from shares_held."""
+    """No SELL in pending_orders → warning logged, fresh STOP created from shares_held."""
     bk = _bk_with_shares(qty=10.0, price=100.0)
     status = _make_status("LONG", active_stop_price=107.5, pending_orders={})
     with caplog.at_level(logging.WARNING, logger="src.trader.trader"):
@@ -285,7 +286,8 @@ def test_update_stoploss_no_existing_creates_fresh(caplog: pytest.LogCaptureFixt
         )
     assert any("UPDATE_STOPLOSS" in r.message for r in caplog.records)
     assert len(result) == 1
-    assert result[0].order_type == "STOP_LIMIT"
+    assert result[0].order_type == "STOP"
     assert result[0].side == "SELL"
-    assert result[0].limit_price == 105.0
+    assert result[0].stop_price == 105.0
+    assert result[0].limit_price is None
     assert result[0].quantity == 10.0

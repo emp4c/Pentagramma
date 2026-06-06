@@ -199,7 +199,7 @@ class TestStopLossQuantity:
 
         stop_order: BrokerOrder = bus.sent_orders[1]
         assert stop_order.side == "SELL"
-        assert stop_order.order_type == "STOP_LIMIT"
+        assert stop_order.order_type == "STOP"
         assert stop_order.quantity == pytest.approx(odd_qty)
 
 

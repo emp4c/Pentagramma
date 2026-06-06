@@ -51,9 +51,9 @@ def process(
     Translation rules:
         CANCEL_ALL_BUYS   → one CANCEL BrokerOrder per pending BUY order_id
         BUY_LIMIT         → LIMIT buy; quantity = floor(available_cash() / price)
-        SELL_STOP         → STOP_LIMIT sell (stop-loss); quantity = shares_held(); condition passed through
+        SELL_STOP         → STOP sell (stop-market, no limit leg); quantity = shares_held(); condition passed through
         SELL_MARKET       → MARKET sell; quantity = shares_held()
-        UPDATE_STOPLOSS   → CANCEL the existing SELL + fresh STOP_LIMIT sell at new price
+        UPDATE_STOPLOSS   → CANCEL the existing SELL + fresh STOP sell at new price
     """
     result: List[BrokerOrder] = []
     now = datetime.now(timezone.utc)
@@ -114,11 +114,12 @@ def process(
                 order_id=str(uuid.uuid4()),
                 ticker=ticker,
                 side="SELL",
-                order_type="STOP_LIMIT",
-                limit_price=order.price,
+                order_type="STOP",
+                limit_price=None,
                 quantity=shares,
                 condition=order.condition,
                 created_at=now,
+                stop_price=order.price,
             ))
 
         elif order.type == "SELL_MARKET":
@@ -171,11 +172,12 @@ def process(
                 order_id=str(uuid.uuid4()),
                 ticker=ticker,
                 side="SELL",
-                order_type="STOP_LIMIT",
-                limit_price=order.price,
+                order_type="STOP",
+                limit_price=None,
                 quantity=shares,
                 condition=None,
                 created_at=now,
+                stop_price=order.price,
             ))
 
     return result

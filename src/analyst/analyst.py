@@ -249,7 +249,7 @@ def analyse(
         order_uuid = str(uuid.uuid4())
         orders.append(AnalystOrder(
             type="BUY_LIMIT",
-            price=min(pivots[i], bar.close) * (1 - BUY_LIMIT_OFFSET),
+            price=pivots[i] * (1 - BUY_LIMIT_OFFSET),
             size="FULL_AVAILABLE_CASH",
             condition=order_uuid,   # trader reads this as the intended BrokerOrder.order_id
         ))

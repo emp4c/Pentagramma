@@ -52,6 +52,7 @@ def _order(
     side: str = "BUY",
     order_type: str = "LIMIT",
     limit_price: float | None = 100.0,
+    stop_price: float | None = None,
     quantity: float = 10.0,
 ) -> BrokerOrder:
     return BrokerOrder(
@@ -63,6 +64,7 @@ def _order(
         quantity=quantity,
         condition=None,
         created_at=BASE_TS,
+        stop_price=stop_price,
     )
 
 
@@ -177,51 +179,51 @@ class TestSellLimit:
 # STOP LIMIT (stop-loss)
 # ---------------------------------------------------------------------------
 
-class TestStopLimit:
-    def test_sell_stop_fills_when_low_drops_to_limit(self):
-        """Stop-loss fires on the first bar where low <= limit_price, not before."""
-        limit = 95.0
+class TestStopMarket:
+    def test_sell_stop_fills_when_low_drops_to_stop_price(self):
+        """Stop-market fires on the first bar where low <= stop_price, not before."""
+        stop = 95.0
         bars = [
-            _bar(0, low=98.0, high=102.0),   # low > limit — no fill
-            _bar(1, low=97.0, high=101.0),   # low > limit — no fill
-            _bar(2, low=94.0, high=100.0),   # low <= limit — fills here
+            _bar(0, low=98.0, high=102.0),   # low > stop — no fill
+            _bar(1, low=97.0, high=101.0),   # low > stop — no fill
+            _bar(2, low=94.0, high=100.0),   # low <= stop — fills here
             _bar(3, low=90.0, high=99.0),    # should not be reached
         ]
         bus = TestBus(bars)
-        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+        order = _order(side="SELL", order_type="STOP", limit_price=None, stop_price=stop)
 
         conf = bus.get_confirmation(bus.send_order(order))
 
         assert conf is not None
-        assert conf.filled_price == limit
+        assert conf.filled_price == stop
         assert conf.filled_at == bars[2].timestamp
         assert conf.side == "SELL"
 
-    def test_sell_stop_does_not_fire_while_price_above_limit(self):
-        """Stop-loss must NOT fire while bar.low remains above the stop price."""
-        limit = 95.0
+    def test_sell_stop_does_not_fire_while_price_above_stop(self):
+        """Stop-market must NOT fire while bar.low remains above the stop price."""
+        stop = 95.0
         bars = [
             _bar(0, low=96.0, high=105.0),
             _bar(1, low=97.0, high=106.0),
         ]
         bus = TestBus(bars)
-        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+        order = _order(side="SELL", order_type="STOP", limit_price=None, stop_price=stop)
 
         conf = bus.get_confirmation(bus.send_order(order))
 
         assert conf is None
 
-    def test_sell_stop_filled_price_is_limit_not_bar_low(self):
-        """Fill executes at limit_price (the stop price), not at the bar's low."""
-        limit = 95.0
-        bars = [_bar(0, low=88.0, high=102.0)]   # low well below limit
+    def test_sell_stop_filled_price_is_stop_price_not_bar_low(self):
+        """Fill executes at stop_price (market fill at trigger level), not at the bar's low."""
+        stop = 95.0
+        bars = [_bar(0, low=88.0, high=102.0)]   # low well below stop
         bus = TestBus(bars)
-        order = _order(side="SELL", order_type="STOP_LIMIT", limit_price=limit)
+        order = _order(side="SELL", order_type="STOP", limit_price=None, stop_price=stop)
 
         conf = bus.get_confirmation(bus.send_order(order))
 
         assert conf is not None
-        assert conf.filled_price == limit   # not 88.0
+        assert conf.filled_price == stop   # not 88.0
 
 
 # ---------------------------------------------------------------------------

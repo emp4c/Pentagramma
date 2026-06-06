@@ -9,12 +9,13 @@ Responsibility:
     Execution rules:
         BUY LIMIT   — fills on the first future bar where bar.low  <= limit_price
         SELL LIMIT  — fills on the first future bar where bar.high >= limit_price
-        STOP LIMIT (sell stop-loss) — fills on the first future bar where bar.low <= limit_price
+        STOP (sell stop-market) — triggers on the first future bar where bar.low <= stop_price;
+                                   fills at stop_price (market fill at trigger level)
         MARKET      — fills at the next bar's open price
         No fill     — returns None if the condition is never met within future_bars
 
-    Filled price = the limit_price (not the bar's low/high), matching typical
-    limit-order semantics. Market fills use next bar's open exactly.
+    Filled price = the limit_price (not the bar's low/high) for LIMIT orders, matching typical
+    limit-order semantics. STOP fills use stop_price. Market fills use next bar's open exactly.
 
     Fill computation is immediate (look-ahead at construction of the order) — the
     bus knows the full future sequence. get_confirmation() returns the pre-computed
@@ -131,7 +132,7 @@ class TestBus:
         """Scan future_bars and return a fill confirmation, or None."""
         if order.order_type == "MARKET":
             return self._fill_market(order, future_bars)
-        if order.order_type == "STOP_LIMIT":
+        if order.order_type == "STOP":
             return self._fill_stop(order, future_bars)
         return self._fill_limit(order, future_bars)
 
@@ -154,17 +155,19 @@ class TestBus:
     def _fill_stop(
         self, order: BrokerOrder, future_bars: List[OHLCVBar]
     ) -> ExecutionConfirmation | None:
-        """Stop-loss fill: SELL triggers when bar.low drops to or below limit_price."""
-        limit_price = order.limit_price
+        """Stop-market fill: SELL triggers when bar.low drops to or below stop_price; fills at stop_price."""
+        trigger_price = order.stop_price
+        if trigger_price is None:
+            return None
         for bar in future_bars:
-            if order.side == "SELL" and bar.low <= limit_price:
+            if order.side == "SELL" and bar.low <= trigger_price:
                 return ExecutionConfirmation(
                     confirmation_id=str(uuid.uuid4()),
                     order_id=order.order_id,
                     ticker=order.ticker,
                     side=order.side,
                     filled_quantity=order.quantity,
-                    filled_price=limit_price,
+                    filled_price=trigger_price,
                     filled_at=bar.timestamp,
                 )
         return None

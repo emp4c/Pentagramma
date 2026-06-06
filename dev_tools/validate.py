@@ -32,16 +32,16 @@ from src.scriber.db import fetch_bars
 # ---------------------------------------------------------------------------
 
 def check1_no_naked_positions(result: RunResult) -> tuple[str, str]:
-    """Every BUY fill must have a STOP_LIMIT/SELL order in order_log within 1 bar."""
+    """Every BUY fill must have a STOP/SELL order in order_log within 1 bar."""
     buy_fills = [(t, conf) for t, conf in result.execution_log if conf.side == "BUY"]
     if not buy_fills:
         return "PASS", ""
 
-    # Map bar index → list of STOP_LIMIT/SELL orders placed at that bar
+    # Map bar index → set of bar indices where a STOP/SELL order was placed
     stop_bars: set[int] = {
         t
         for t, order in result.order_log
-        if order.order_type == "STOP_LIMIT" and order.side == "SELL"
+        if order.order_type == "STOP" and order.side == "SELL"
     }
 
     failures = []
@@ -49,7 +49,7 @@ def check1_no_naked_positions(result: RunResult) -> tuple[str, str]:
         if t not in stop_bars and (t + 1) not in stop_bars:
             failures.append(
                 f"BUY fill at bar {t} (order_id={conf.order_id}) "
-                "has no STOP_LIMIT/SELL within 1 bar"
+                "has no STOP/SELL within 1 bar"
             )
 
     if failures:

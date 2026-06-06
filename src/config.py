@@ -41,6 +41,11 @@ BUY_LIMIT_OFFSET: float = 0.001
 # Fractional offset applied below the pivot when placing a buy-limit order.
 # E.g. 0.001 = buy at pivot * (1 - 0.001), i.e. 0.1% below the pivot.
 
+ENTRY_STOP_FLOOR_PCT: float = 0.01
+# Maximum loss fraction from fill price for the entry stop-loss.
+# Effective stop = min(analyst_stop_midpoint, fill_price * (1 - ENTRY_STOP_FLOOR_PCT)).
+# Prevents the pivot-midpoint stop from being placed too close to the fill price.
+
 # ---------------------------------------------------------------------------
 # Pivot builder
 # ---------------------------------------------------------------------------

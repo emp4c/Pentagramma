@@ -46,7 +46,7 @@ Do not reorder items — dependencies flow top to bottom.
 - [x] Implement `dev_tools/test_api/test_bus.py`: `TestBus` implementing `BrokerBusProtocol`
   - [x] Buy limit (`LIMIT`/`BUY`): fills on first future bar where `low <= limit_price`
   - [x] Sell limit (`LIMIT`/`SELL`): fills on first future bar where `high >= limit_price`
-  - [x] Stop-loss (`STOP_LIMIT`/`SELL`): fills on first future bar where `low <= limit_price`
+  - [x] Stop-market (`STOP`/`SELL`): fills on first future bar where `low <= stop_price`; fills at `stop_price`
   - [x] Market: fills at next bar's open
   - [x] Returns `None` if never filled within window
 - [x] Define `src/bus/protocol.py`: `BrokerBusProtocol` (Python `Protocol` class)

@@ -238,8 +238,8 @@ def _to_est(dt: datetime) -> datetime:
 def _order_label(order: BrokerOrder) -> str:
     if order.order_type == "MARKET":
         return f"MARKET_SELL qty:{order.quantity:g}"
-    if order.order_type == "STOP_LIMIT":
-        return f"STOP_LIMIT@{order.limit_price:.2f} qty:{order.quantity:g}"
+    if order.order_type == "STOP":
+        return f"STOP@{order.stop_price:.2f} qty:{order.quantity:g}"
     # LIMIT
     if order.side == "BUY":
         return f"BUY_LIMIT@{order.limit_price:.2f} qty:{order.quantity:g}"

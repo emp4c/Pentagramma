@@ -173,11 +173,12 @@ def run_batch(
                         order_id=str(uuid.uuid4()),
                         ticker=ticker,
                         side="SELL",
-                        order_type="STOP_LIMIT",
-                        limit_price=stop_price,
+                        order_type="STOP",
+                        limit_price=None,
                         quantity=conf.filled_quantity,
                         condition=None,
                         created_at=datetime.now(timezone.utc),
+                        stop_price=stop_price,
                     )
                     test_bus.send_order(stop_order, current_bar_index=t)
                     status.pending_orders[stop_order.order_id] = "SELL"

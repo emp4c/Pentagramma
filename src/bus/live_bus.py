@@ -22,7 +22,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import (
     LimitOrderRequest,
     MarketOrderRequest,
-    StopLimitOrderRequest,
+    StopOrderRequest,
 )
 
 from src.config_env import ALPACA_API_KEY, ALPACA_API_SECRET, ALPACA_PAPER
@@ -179,16 +179,13 @@ class LiveBus:
                 time_in_force=TimeInForce.GTC,
             )
 
-        elif otype == "STOP_LIMIT" and side == "SELL":
-            # stop_price sits 0.1 % above limit_price so the order triggers before
-            # the limit is hit — prevents the limit from never being reached on a gap
-            stop_price = round(limit_price * 1.002, 2)
-            req = StopLimitOrderRequest(
+        elif otype == "STOP" and side == "SELL":
+            stop_price = round(order.stop_price, 2) if order.stop_price is not None else None
+            req = StopOrderRequest(
                 symbol=order.ticker,
                 qty=order.quantity,
                 side=OrderSide.SELL,
                 stop_price=stop_price,
-                limit_price=limit_price,
                 time_in_force=TimeInForce.GTC,
             )
 

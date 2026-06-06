@@ -104,6 +104,9 @@ class TradingSession:
             _logger.info(
                 "Initial pivots built for %s: %d levels", ticker, len(self._current_pivots)
             )
+        self._tlog.log_pivots_recalculated(
+            self._current_pivots, 0, self._status, self._bookkeeper
+        )
 
     # ------------------------------------------------------------------
     # Main callback

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import time
 
+from alpaca.data.enums import DataFeed
 from alpaca.data.live import StockDataStream
 from alpaca.data.models import Bar
 
@@ -29,7 +30,7 @@ class AlpacaBarStream:
     def __init__(self, session: TradingSession, ticker: str) -> None:
         self.session = session
         self.ticker = ticker
-        self.wss_client = StockDataStream(ALPACA_API_KEY, ALPACA_API_SECRET)
+        self.wss_client = StockDataStream(ALPACA_API_KEY, ALPACA_API_SECRET, feed=DataFeed.SIP)
         self.wss_client.subscribe_bars(self._on_bar, ticker)
 
     async def _on_bar(self, bar: Bar) -> None:
@@ -51,7 +52,7 @@ class AlpacaBarStream:
         self.session.on_bar(ohlcv)
 
     def _rebuild_client(self) -> None:
-        self.wss_client = StockDataStream(ALPACA_API_KEY, ALPACA_API_SECRET)
+        self.wss_client = StockDataStream(ALPACA_API_KEY, ALPACA_API_SECRET, feed=DataFeed.SIP)
         self.wss_client.subscribe_bars(self._on_bar, self.ticker)
 
     def run(self) -> None:

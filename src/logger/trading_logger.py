@@ -649,6 +649,74 @@ class TradingLogger:
         })
         self.log_daily_summary("time_limit", status, bookkeeper)
 
+    def log_reconciliation_orphan_shares(
+        self,
+        qty: float,
+        close_price: float,
+        status: MachineStatus,
+        bookkeeper: Bookkeeper,
+    ) -> None:
+        self._write_jsonl({
+            "timestamp": self._ts(),
+            "event_type": "RECONCILIATION_ORPHAN_SHARES",
+            "symbol": self._ticker,
+            "local_shares": qty,
+            "close_price": close_price,
+            "action": "SELL_MARKET_emitted",
+            "portfolio_snapshot": self._portfolio_snapshot(bookkeeper),
+        })
+
+    def log_reconciliation_stop_resized(
+        self,
+        old_qty: float,
+        new_qty: float,
+        old_stop_id: str,
+        status: MachineStatus,
+        bookkeeper: Bookkeeper,
+    ) -> None:
+        self._write_jsonl({
+            "timestamp": self._ts(),
+            "event_type": "RECONCILIATION_STOP_RESIZED",
+            "symbol": self._ticker,
+            "old_stop_qty": old_qty,
+            "new_stop_qty": new_qty,
+            "old_stop_id": old_stop_id,
+            "action": "stop_cancelled_and_resubmitted",
+            "portfolio_snapshot": self._portfolio_snapshot(bookkeeper),
+        })
+
+    def log_reconciliation_critical(
+        self,
+        local_shares: float,
+        status: MachineStatus,
+        bookkeeper: Bookkeeper,
+    ) -> None:
+        self._write_jsonl({
+            "timestamp": self._ts(),
+            "event_type": "RECONCILIATION_CRITICAL",
+            "symbol": self._ticker,
+            "local_shares": local_shares,
+            "action": "forced_IDLE",
+            "portfolio_snapshot": self._portfolio_snapshot(bookkeeper),
+        })
+
+    def log_reconciliation_double_commit_guard(
+        self,
+        broker_order_id: str,
+        staged_qty: float,
+        status: MachineStatus,
+        bookkeeper: Bookkeeper,
+    ) -> None:
+        self._write_jsonl({
+            "timestamp": self._ts(),
+            "event_type": "RECONCILIATION_DOUBLE_COMMIT_GUARD",
+            "symbol": self._ticker,
+            "broker_order_id": broker_order_id,
+            "staged_qty": staged_qty,
+            "action": "re_commit_skipped",
+            "portfolio_snapshot": self._portfolio_snapshot(bookkeeper),
+        })
+
     def log_daily_summary(
         self,
         stop_reason: str,

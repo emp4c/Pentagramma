@@ -86,6 +86,9 @@ class TradingSession:
         # broker_order_id → entry-band stop price; mirrored from _pending_stop_losses at
         # dispatch time so notify_cancel can find it even after _id_map is cleaned up
         self._entry_stop_by_broker_id: Dict[str, float] = {}
+        # broker_id → quantity of active STOP/SELL orders; used by reconciliation to
+        # detect and resize mismatched stop-loss sizes
+        self._pending_stop_qty: Dict[str, float] = {}
 
         self._tlog = TradingLogger(ticker=ticker, initial_cash=initial_cash)
         # Flags to emit DAILY_LOSS_LIMIT_HIT / TIME_LIMIT_HIT only on first occurrence per day
@@ -122,6 +125,10 @@ class TradingSession:
 
         # Step 2 — Increment bar counter
         self._status.bar_count += 1
+
+        # Step 2.5 — Reconcile local position state before calling analyst
+        if self._reconcile_bar(bar):
+            return
 
         # Step 3 — Scheduled pivot rebuild every PIVOT_INTERVAL_BARS
         if self._status.bar_count % PIVOT_INTERVAL_BARS == 0:
@@ -228,6 +235,7 @@ class TradingSession:
                 broker_id = self._id_map.get(broker_order.order_id, broker_order.order_id)
                 self._bus.cancel_order(broker_id)
                 self._status.pending_orders.pop(broker_id, None)
+                self._pending_stop_qty.pop(broker_id, None)
                 if broker_order.side == "BUY":
                     self._pending_stop_losses.pop(broker_order.order_id, None)
                     self._id_map.pop(broker_order.order_id, None)
@@ -242,6 +250,7 @@ class TradingSession:
                     for oid in [o for o, s in list(self._status.pending_orders.items()) if s == "SELL"]:
                         self._bus.cancel_order(oid)
                         del self._status.pending_orders[oid]
+                        self._pending_stop_qty.pop(oid, None)
                         self._tlog.log_order_cancelled(
                             oid, "superseded_by_market_sell", self._status, self._bookkeeper
                         )
@@ -369,6 +378,19 @@ class TradingSession:
         if staged is None or staged.side != "BUY" or staged.filled_quantity == 0.0:
             return
 
+        # Guard: if position is already LONG a full-fill arrived before this cancel event.
+        # Committing again would double-count the shares; skip and log instead.
+        if self._status.position == "LONG":
+            _logger.warning(
+                "notify_cancel: double-commit guard — position already LONG when cancel "
+                "arrived for order_id=%s (staged_qty=%.4f); skipping re-commit",
+                broker_order_id, staged.filled_quantity,
+            )
+            self._tlog.log_reconciliation_double_commit_guard(
+                broker_order_id, staged.filled_quantity, self._status, self._bookkeeper
+            )
+            return
+
         # Shares were acquired before the cancel — commit and protect with a stop-loss.
         self._bookkeeper.receive_confirmation(staged)
         self._status.position = "LONG"
@@ -404,12 +426,14 @@ class TradingSession:
         broker_id = self._bus.send_order(stop_order)
         self._id_map[stop_order.order_id] = broker_id
         self._status.pending_orders[broker_id] = "SELL"
+        self._pending_stop_qty[broker_id] = stop_order.quantity
         self._tlog.log_stop_submitted(stop_order, broker_id, self._status, self._bookkeeper)
 
     def _handle_confirmation(self, order_id: str, conf: ExecutionConfirmation) -> None:
         """Process a single confirmed fill: update bookkeeper, position, and activate stop-loss."""
         self._bookkeeper.receive_confirmation(conf)
         del self._status.pending_orders[order_id]
+        self._pending_stop_qty.pop(order_id, None)
         # Reverse-lookup internal UUID before pruning (order_id is the broker UUID)
         _reverse = {v: k for k, v in self._id_map.items()}
         internal_id = _reverse.get(order_id, order_id)  # fallback: no-remap case (test/batch)
@@ -440,6 +464,7 @@ class TradingSession:
                 broker_id = self._bus.send_order(stop_order)
                 self._id_map[stop_order.order_id] = broker_id
                 self._status.pending_orders[broker_id] = "SELL"
+                self._pending_stop_qty[broker_id] = stop_order.quantity
                 _logger.info(
                     "Stop-loss activated: analyst_stop=%.4f effective_stop=%.4f "
                     "fill=%.4f qty=%.4f order_id=%s",
@@ -534,6 +559,7 @@ class TradingSession:
         broker_id = self._bus.send_order(stop_order)
         self._id_map[stop_order.order_id] = broker_id
         self._status.pending_orders[broker_id] = "SELL"
+        self._pending_stop_qty[broker_id] = stop_order.quantity
         _logger.info(
             "Stop-loss activated (partial fill): price=%.4f qty=%.4f broker_id=%s",
             stop_price, conf.filled_quantity, broker_id,
@@ -544,6 +570,146 @@ class TradingSession:
         """Flush final daily summary and close logger resources. Call on graceful exit."""
         self._tlog.log_daily_summary("session_end", self._status, self._bookkeeper)
         self._tlog.close()
+
+    def _reconcile_bar(self, bar: OHLCVBar) -> bool:
+        """
+        Reconcile local position state against bookkeeper's share count.
+
+        Runs every bar before the analyst. Also periodically queries the broker
+        for position data (every 10 bars) to catch drift earlier.
+
+        Returns True if on_bar() should return early (orphan-shares emitted).
+        """
+        # Periodic broker position check — throttled to avoid rate limits
+        if self._status.bar_count % 10 == 0:
+            _get_pos = getattr(self._bus, "get_positions", None)
+            if _get_pos is not None:
+                try:
+                    broker_shares = _get_pos(self._ticker)
+                    if broker_shares is not None:
+                        bk_shares = self._bookkeeper.shares_held()
+                        if abs(broker_shares - bk_shares) > 0.01:
+                            _logger.warning(
+                                "Broker position check (bar %d): broker=%.4f bookkeeper=%.4f "
+                                "for %s — bookkeeper will be updated when local reconcile acts",
+                                self._status.bar_count, broker_shares, bk_shares, self._ticker,
+                            )
+                except Exception:
+                    _logger.exception(
+                        "get_positions() call failed at bar %d for %s",
+                        self._status.bar_count, self._ticker,
+                    )
+
+        local_shares = self._bookkeeper.shares_held()
+
+        # Case 3: orphan shares — bookkeeper has shares but machine thinks IDLE
+        if local_shares > 0 and self._status.position == "IDLE":
+            # Guard: if a SELL is already pending (e.g. from a previous bar's orphan-sell),
+            # don't emit a second one — wait for the first to confirm.
+            has_pending_sell = any(
+                s == "SELL" for s in self._status.pending_orders.values()
+            )
+            if has_pending_sell:
+                return False
+
+            _logger.warning(
+                "RECONCILIATION_ORPHAN_SHARES: local_shares=%.4f position=IDLE "
+                "close=%.4f bar=%d — emitting SELL_MARKET",
+                local_shares, bar.close, self._status.bar_count,
+            )
+            self._tlog.log_reconciliation_orphan_shares(
+                local_shares, bar.close, self._status, self._bookkeeper
+            )
+            # Cancel any lingering SELL orders before the market sell lands
+            for oid in [o for o, s in list(self._status.pending_orders.items()) if s == "SELL"]:
+                self._bus.cancel_order(oid)
+                self._status.pending_orders.pop(oid, None)
+                self._pending_stop_qty.pop(oid, None)
+                self._tlog.log_order_cancelled(
+                    oid, "reconcile_pre_market_sell", self._status, self._bookkeeper
+                )
+            sell_order = BrokerOrder(
+                order_id=str(uuid.uuid4()),
+                ticker=self._ticker,
+                side="SELL",
+                order_type="MARKET",
+                limit_price=None,
+                quantity=local_shares,
+                condition=None,
+                created_at=datetime.now(timezone.utc),
+                stop_price=None,
+            )
+            broker_id = self._bus.send_order(sell_order)
+            self._id_map[sell_order.order_id] = broker_id
+            self._status.pending_orders[broker_id] = "SELL"
+            self._tlog.log_order_submitted(sell_order, broker_id, self._status, self._bookkeeper)
+            return True  # skip analyst this bar
+
+        # Case 4: LONG with shares — verify the active stop order is sized correctly
+        elif local_shares > 0 and self._status.position == "LONG":
+            sell_stops = {
+                oid: self._pending_stop_qty[oid]
+                for oid, side in self._status.pending_orders.items()
+                if side == "SELL" and oid in self._pending_stop_qty
+            }
+            for stop_id, stop_qty in sell_stops.items():
+                if abs(stop_qty - local_shares) > 0.01:
+                    _logger.warning(
+                        "RECONCILIATION_STOP_RESIZED: stop_qty=%.4f != local_shares=%.4f "
+                        "(stop_id=%s bar=%d) — cancelling and re-submitting",
+                        stop_qty, local_shares, stop_id, self._status.bar_count,
+                    )
+                    self._tlog.log_reconciliation_stop_resized(
+                        stop_qty, local_shares, stop_id, self._status, self._bookkeeper
+                    )
+                    self._bus.cancel_order(stop_id)
+                    self._status.pending_orders.pop(stop_id, None)
+                    self._pending_stop_qty.pop(stop_id, None)
+                    if self._status.active_stop_price is None:
+                        _logger.error(
+                            "RECONCILIATION_STOP_RESIZED: active_stop_price is None "
+                            "for LONG position — cannot re-submit stop; position unprotected",
+                        )
+                        break
+                    new_stop = BrokerOrder(
+                        order_id=str(uuid.uuid4()),
+                        ticker=self._ticker,
+                        side="SELL",
+                        order_type="STOP",
+                        limit_price=None,
+                        quantity=local_shares,
+                        condition=None,
+                        created_at=datetime.now(timezone.utc),
+                        stop_price=self._status.active_stop_price,
+                    )
+                    new_broker_id = self._bus.send_order(new_stop)
+                    self._id_map[new_stop.order_id] = new_broker_id
+                    self._status.pending_orders[new_broker_id] = "SELL"
+                    self._pending_stop_qty[new_broker_id] = local_shares
+                    self._tlog.log_stop_submitted(
+                        new_stop, new_broker_id, self._status, self._bookkeeper
+                    )
+                break  # only one active stop expected per position
+
+        # Case 5: LONG but no shares — critical inconsistency; force IDLE
+        elif local_shares == 0 and self._status.position == "LONG":
+            _logger.critical(
+                "RECONCILIATION_CRITICAL: position=LONG but local_shares=0 at bar %d — "
+                "forcing IDLE and cancelling all pending sells",
+                self._status.bar_count,
+            )
+            self._tlog.log_reconciliation_critical(local_shares, self._status, self._bookkeeper)
+            for oid in [o for o, s in list(self._status.pending_orders.items()) if s == "SELL"]:
+                self._bus.cancel_order(oid)
+                self._status.pending_orders.pop(oid, None)
+                self._pending_stop_qty.pop(oid, None)
+                self._tlog.log_order_cancelled(
+                    oid, "reconcile_critical_clear", self._status, self._bookkeeper
+                )
+            self._status.position = "IDLE"
+            self._status.active_stop_price = None
+
+        return False
 
     def _build_pivots_from_db(self) -> List[float]:
         """Fetch PIVOT_LOOKBACK_DAYS of history from DB and compute fresh pivots."""

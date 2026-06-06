@@ -67,7 +67,12 @@ The architecture is a pipeline of stateless components communicating via explici
 - **Partial-fill staging**: on each `partial_fill` WebSocket event for a BUY order, the coordinator stores the latest cumulative `ExecutionConfirmation` in `_partial_fill_staging` (keyed by Alpaca broker UUID). Alpaca reports `filled_qty` as a running cumulative total, so each new event simply overwrites the previous entry — no delta arithmetic needed.
 - **Entry stop price mirror**: at the moment a BUY order is dispatched to the broker, the coordinator copies the entry-band stop price (already warehoused in `_pending_stop_losses`) into a parallel dict `_entry_stop_by_broker_id` keyed by the Alpaca broker UUID. This survives the coordinator's own cleanup of `_pending_stop_losses` and `_id_map` and is the authoritative source for `notify_cancel`. On each `partial_fill` event, `stage_partial_fill` overwrites this entry with `min(stored_stop, filled_avg_price × (1 − ENTRY_STOP_FLOOR_PCT))`, so by the time a cancel arrives the stored value is already the floor-adjusted stop.
 - **Entry stop floor**: when activating the entry stop-loss (either on a full fill or via commit-on-cancel), the coordinator computes `effective_stop = min(analyst_pivot_midpoint, fill_price × (1 − ENTRY_STOP_FLOOR_PCT))`. This prevents the stop from being placed closer to the fill price than the configured floor (default 1%). `active_stop_price` is set to `effective_stop`; the ratchet in subsequent LONG bars advances naturally from there.
-- **Commit-on-cancel**: when a `canceled` (or `rejected`/`expired`) event arrives for a BUY order that has staged partial fills, the coordinator (via `notify_cancel`): commits the staged shares to the bookkeeper, transitions position to LONG, sets `active_stop_price` to the floor-adjusted stop stored in `_entry_stop_by_broker_id`, and emits a `STOP`-market order to the broker for the actual shares acquired. If no partial fills were staged the coordinator stays IDLE.
+- **Commit-on-cancel**: when a `canceled` (or `rejected`/`expired`) event arrives for a BUY order that has staged partial fills, the coordinator (via `notify_cancel`): commits the staged shares to the bookkeeper, transitions position to LONG, sets `active_stop_price` to the floor-adjusted stop stored in `_entry_stop_by_broker_id`, and emits a `STOP`-market order to the broker for the actual shares acquired. If no partial fills were staged the coordinator stays IDLE. **Double-commit guard**: if `status.position` is already `LONG` when the cancel event arrives (because a full-fill confirmation was processed first), the commit is skipped and a `RECONCILIATION_DOUBLE_COMMIT_GUARD` event is logged — preventing shares from being counted twice.
+- **Stop order quantity tracking**: the coordinator maintains `_pending_stop_qty: Dict[str, float]` (broker_id → qty). It is populated whenever a STOP/SELL order is submitted and cleared on fill or cancel. Used by the per-bar reconciliation check to detect and resize mismatched stop orders.
+- **Per-bar reconciliation** (`_reconcile_bar`): runs at the start of every `on_bar()` call, before the analyst, using `bookkeeper.shares_held()` as the local reference. Also queries `bus.get_positions()` every 10 bars (if the bus supports it) to log drift against the broker. Three cases are handled:
+  - **RECONCILIATION_ORPHAN_SHARES** (`local_shares > 0`, position `IDLE`): the bookkeeper holds shares the machine does not account for. Any pending SELL orders are cancelled, a `SELL_MARKET` for `local_shares` is emitted, and `on_bar()` returns early — the analyst does not run this bar. A pending-sell guard prevents re-emission on subsequent bars while waiting for the fill.
+  - **RECONCILIATION_STOP_RESIZED** (`local_shares > 0`, position `LONG`, stop qty ≠ local_shares by > 0.01): the mismatched stop is cancelled and re-submitted for `local_shares` at the current `active_stop_price`. Skipped if `active_stop_price` is `None`.
+  - **RECONCILIATION_CRITICAL** (`local_shares == 0`, position `LONG`): critical inconsistency — all pending SELL orders are cancelled, `status.position` is forced to `IDLE`, and `active_stop_price` is cleared. The analyst still runs this bar on the corrected IDLE state.
 
 ### Batch Runner (`dev_tools/batch_runner/`)
 - **Not production code**
@@ -137,6 +142,12 @@ The architecture is a pipeline of stateless components communicating via explici
 Live feed
   → stream_entry receives OHLCVBar
   → scriber writes bar to DB
+  → bar_count incremented
+  → _reconcile_bar(): check bookkeeper.shares_held() vs status.position
+      → ORPHAN_SHARES (local_shares>0, IDLE): emit SELL_MARKET, return early
+      → STOP_RESIZED  (local_shares>0, LONG, qty mismatch): resize stop order
+      → CRITICAL      (local_shares==0, LONG): force IDLE, cancel pending sells
+      → every 10 bars: query bus.get_positions() and log drift if any
   → if bar_count % 30 == 0: pivot_builder recalculates pivots
   → analyst(bar, machine_status, pivots) → AnalystOrders
   → trader(AnalystOrders, machine_status) → BrokerOrders
